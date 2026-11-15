@@ -26,7 +26,7 @@ const DISCLAIMER = '以上内容基于公开数据和量化分析，仅供参考
 
 /* ─────────── 可选大模型配置（仅存内存：不落盘、不写日志、不回传密钥） ─────────── */
 const aiConfig = { baseUrl: '', apiKey: '', model: '' };
-const AI_SYSTEM_PROMPT = '你是严谨的 A 股短线复盘研究助手。严格遵守：1) 只能使用用户消息中提供的行情数据，禁止编造任何数字、公司、事件、新闻、政策或研报；2) 不预测指数涨跌方向，不使用「必涨/必跌」等绝对表述；3) 不给出具体买卖价位、仓位指令或收益承诺；4) 每个结论都要点明依据的数据字段；5) 明确指出数据边界（未接入新闻/公告/龙虎榜、非交易所官方推送）。输出用简体中文，结构清晰、克制、可执行的是观察框架而非交易指令。';
+const AI_SYSTEM_PROMPT = '你是严谨的 A 股短线复盘研究助手。严格遵守：1) 只能使用用户消息中提供的行情数据，禁止编造任何数字、公司、事件、新闻、政策或研报；2) 不预测指数涨跌方向，不使用「必涨/必跌」等绝对表述；3) 不给出具体买卖价位、仓位指令或收益承诺；4) 每个结论都要点明依据的数据字段；5) 明确指出数据边界（本页结论仅由量价结构推导，公告/快讯消息面仅在「明日龙头」模块单独展示、未纳入本页评分，仍未接入龙虎榜，且均为非交易所官方推送的公开接口快照）。输出用简体中文，结构清晰、克制、可执行的是观察框架而非交易指令。';
 
 function aiStatus() {
   return {
@@ -75,7 +75,7 @@ function postJson(url, headers, payload, timeout = 45000) {
 function buildAiPrompt(d) {
   const ov = d.overview, rv = d.review;
   const lines = [];
-  lines.push('【数据边界】以下均为免费公开接口快照，非交易所官方推送；未接入新闻/公告/龙虎榜；不构成投资建议。');
+  lines.push('【数据边界】以下均为免费公开接口快照，非交易所官方推送；公告/快讯消息面仅在「明日龙头」模块单独轮询展示（关键词规则归类），未纳入本页评分；仍未接入龙虎榜；不构成投资建议。');
   lines.push(`【时点】交易日 ${d.meta.poolDate}；腾讯实时快照 ${d.meta.quoteTick || '—'}；新浪全市场快照 ${d.meta.universeTick || '—'}；交易状态 ${d.meta.state}。`);
   lines.push(`【市场】档位「${ov.tier}」/情绪「${ov.emotion}」；${ov.up} 涨 / ${ov.down} 跌，广度 ${ov.breadth}%；涨幅≥5% ${ov.up5} 家、跌幅≥5% ${ov.down5} 家；指数均值 ${ov.idxAvg}%。`);
   lines.push(`【指数】${(ov.indices || []).map(i => i.name + ' ' + i.price + ' (' + (i.pct > 0 ? '+' : '') + i.pct + '%)').join('；')}`);
@@ -656,6 +656,126 @@ async function getDragon(query, force) {
   return dragonCache.inflight;
 }
 
+/* ─────────── 消息面实时监控（公告 + 7×24 快讯，独立短缓存与新增标记） ─────────── */
+const newsCache = { value: null, key: '', at: 0, inflight: null };
+const newsSeen = new Map();     // 条目 ID → 服务端首次发现时间（ms），用于「新增」标记
+let newsWarm = false;           // 首轮只建立基线，不把所有历史消息都标成新增
+
+function clampNum(v, lo, hi, def) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.max(lo, Math.min(hi, n)) : def;
+}
+
+function dragonCandidates(dg, codes) {
+  const rows = [...(dg.allRoles || []), ...(dg.list || []), ...(dg.excluded || [])];
+  const byCode = new Map();
+  for (const r of rows) if (r && r.code && !byCode.has(String(r.code))) byCode.set(String(r.code), r);
+  const out = [];
+  for (const c of codes) {
+    const r = byCode.get(String(c));
+    if (!r) continue;
+    out.push({
+      code: String(r.code), name: r.name, boards: r.boards, boardLabel: r.boardLabel,
+      role: r.role, dtype: r.dtype, isLeader: !!r.isLeader,
+      consensus: r.consensus, divergence: r.divergence
+    });
+  }
+  return out;
+}
+
+async function buildNews(query) {
+  const t0 = Date.now();
+  const windowHours = clampNum(query.window, 1, 336, 48);
+  const limit = clampNum(query.limit, 10, 120, 60);
+  const scope = query.scope === 'pool' ? 'pool' : 'leaders';
+  const explicit = [...new Set(String(query.codes || '').split(',')
+    .map(c => String(c).replace(/\D/g, '')).filter(c => /^\d{6}$/.test(c)))].slice(0, 80);
+
+  let dg = { list: [], allRoles: [], excluded: [], meta: {} };
+  let dgErr = null;
+  try {
+    dg = await getDragon({ showAll: scope === 'pool' ? '1' : '0', limit: '60', days: '12' }, false);
+  } catch (e) { dgErr = String(e && e.message || e); }
+
+  const codes = explicit.length ? explicit : (dg.list || []).map(x => String(x.code)).filter(Boolean);
+  const candidates = dragonCandidates(dg, codes);
+  const [ann, flash] = await Promise.all([
+    ds.getAnnouncements(codes, Math.max(20, limit)),
+    ds.getFlashNews(Math.max(20, Math.min(60, limit)))
+  ]);
+  const mon = an.newsMonitor({ ann, flash, candidates, windowHours });
+  const hs = ds.getHealth().filter(h => ['emAnn', 'sinaFlash', 'emFlash'].indexOf(h.key) >= 0);
+
+  return {
+    mon,
+    meta: {
+      windowHours, scope, limit,
+      codesCount: codes.length, candidatesCount: candidates.length,
+      poolDate: (dg.meta && dg.meta.poolDate) || null,
+      generatedAt: new Date().toISOString(), elapsedMs: Date.now() - t0,
+      annCount: (ann && ann.items ? ann.items.length : 0),
+      flashCount: (flash && flash.items ? flash.items.length : 0),
+      annAsOf: (ann && ann.asOf) || null, flashAsOf: (flash && flash.asOf) || null,
+      sources: hs.map(h => ({ key: h.key, label: h.label, ok: h.ok, rows: h.rows, error: h.error, latency: h.latency })),
+      sourcesOnline: hs.filter(h => h.ok).length, sourcesTotal: hs.length,
+      empty: mon.items.length === 0,
+      note: (dgErr ? '龙头候选获取失败（' + dgErr + '），本次退化为全市场公告与快讯，未做个股关联；' : '') +
+        (codes.length ? '按 ' + codes.length + ' 只候选代码查询公告' : '当前无候选代码，展示全市场最新公告') +
+        '；消息源为免费公开接口的定时轮询，不是交易所官方推送。'
+    }
+  };
+}
+
+async function getNews(query, force) {
+  const key = JSON.stringify({ window: query.window || '', scope: query.scope || '', codes: query.codes || '', limit: query.limit || '' });
+  let data;
+  if (!force && newsCache.value && newsCache.key === key && Date.now() - newsCache.at < 20000) {
+    data = newsCache.value;
+  } else if (newsCache.inflight) {
+    data = await newsCache.inflight;
+  } else {
+    newsCache.inflight = buildNews(query).then(v => {
+      newsCache.value = v; newsCache.key = key; newsCache.at = Date.now();
+      return v;
+    }).finally(() => { newsCache.inflight = null; });
+    data = await newsCache.inflight;
+  }
+
+  // 每轮按服务端首次发现时间重算「新增」，首轮只建基线
+  const nowMs = Date.now();
+  const fresh = new Set();
+  for (const it of data.mon.items) {
+    if (!newsSeen.has(it.id)) {
+      newsSeen.set(it.id, nowMs);
+      if (newsWarm) fresh.add(it.id);
+    }
+    it.firstSeenAt = new Date(newsSeen.get(it.id)).toISOString();
+    it.isNew = fresh.has(it.id);
+  }
+  newsWarm = true;
+  for (const [id, t] of newsSeen) if (nowMs - t > 7 * 86400000) newsSeen.delete(id);
+
+  const sinceMs = query.since ? Date.parse(String(query.since)) : NaN;
+  const newCount = Number.isFinite(sinceMs)
+    ? data.mon.items.filter(x => Date.parse(x.firstSeenAt) > sinceMs).length
+    : fresh.size;
+
+  return {
+    meta: {
+      ...data.meta,
+      generatedAt: new Date(nowMs).toISOString(),
+      since: query.since || null, newCount, freshCount: fresh.size,
+      seenCount: newsSeen.size, pollIntervalSec: 30,
+      disclaimer: DISCLAIMER
+    },
+    summary: { ...data.mon.summary, newCount },
+    alerts: data.mon.alerts,
+    items: data.mon.items,
+    methodology: data.mon.methodology,
+    disclaimer: DISCLAIMER
+  };
+}
+
 /* ─────────── 路由 ─────────── */
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://localhost:' + ACTIVE_PORT);
@@ -703,6 +823,7 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === '/api/pullback') return sendJson(res, await getPullback(q, q.force === '1'));
     if (u.pathname === '/api/backtest') return sendJson(res, await getBacktest(q, q.force === '1'));
     if (u.pathname === '/api/dragon') return sendJson(res, await getDragon(q, q.force === '1'));
+    if (u.pathname === '/api/news') return sendJson(res, await getNews(q, q.force === '1'));
     if (u.pathname === '/api/health') return sendJson(res, { ...beijingNow(), port: ACTIVE_PORT, health: ds.getHealth(), ai: aiStatus(), disclaimer: DISCLAIMER });
     if (u.pathname === '/api/boards') return sendJson(res, await ds.getSectorBoards());
     if (u.pathname === '/api/pools') return sendJson(res, await ds.getPools());
