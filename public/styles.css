@@ -502,3 +502,30 @@ ul.tight li{margin-bottom:2px}
 .nw-detail-title{margin:4px 0 2px;font-weight:600;line-height:1.55}
 @media(max-width:1280px){.nw-kpis{grid-template-columns:repeat(3,1fr)}}
 @media(max-width:700px){.nw-kpis{grid-template-columns:repeat(2,1fr)}.nw-ctl{flex-direction:column;align-items:flex-start}.nw-input{width:100%}.nw-rule{flex-direction:column;gap:2px}.nw-rule b{width:auto}}
+
+/* ─── 明日龙头：严重异动预测 / 交易风险标记 ─── */
+.dg-risk-badges{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.dg-risk-badge{display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600;border:1px solid transparent;cursor:help;line-height:1.6}
+.dg-risk-badge.rk-sev-high{background:#fdecec;color:#b52d22;border-color:#f0b3b3}
+.dg-risk-badge.rk-sev-mid{background:#fff5e4;color:#a35d00;border-color:#f0d5a4}
+.dg-risk-badge.rk-trd-high{background:#f4eafb;color:#743a99;border-color:#ddc4ee}
+.dg-risk-badge.rk-trd-mid{background:#edf3fa;color:#35608f;border-color:#cbdcf0}
+.dg-risk-status{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 11px;border-radius:6px;margin-bottom:10px;border-left:3px solid var(--line)}
+.dg-risk-status.high{background:#fdecec;border-left-color:#c0392b;color:#8e2b20}
+.dg-risk-status.mid{background:#fff6e8;border-left-color:var(--warn);color:#8a5a12}
+.dg-risk-status.low{background:#eef7f1;border-left-color:#2e8b57;color:#2a6b47}
+.dg-risk-status b{font-size:13px}
+.dg-risk-status span{font-size:11px;opacity:.92}
+.dg-risk-card .tbl-wrap{margin:6px 0 8px}
+.dg-risk-card table{width:100%;font-size:11.5px}
+.dg-risk-card table th,.dg-risk-card table td{padding:5px 7px;border-bottom:1px solid var(--line2);text-align:left}
+.dg-risk-action{background:#f7f9fc;border:1px solid var(--line);border-radius:6px;padding:9px 11px;font-size:11.5px;line-height:1.75;margin:9px 0}
+.dg-risk-flag{border:1px solid var(--line2);border-left:3px solid var(--line);border-radius:5px;padding:7px 9px;margin-bottom:6px}
+.dg-risk-flag.high{border-left-color:#c0392b;background:#fffafa}
+.dg-risk-flag.medium{border-left-color:var(--warn);background:#fffdf8}
+.dg-risk-flag-top{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11.5px;margin-bottom:3px}
+.dg-risk-links{margin-top:4px;display:flex;gap:8px;flex-wrap:wrap}
+.dg-risk-links a{font-size:10.5px;color:var(--blue);text-decoration:none}
+.dg-risk-links a:hover{text-decoration:underline}
+.dg-risk-method-rules{margin-bottom:8px}
+@media(max-width:700px){.dg-risk-card table{font-size:10.5px}.dg-risk-status{flex-direction:column;align-items:flex-start;gap:4px}}

@@ -1452,7 +1452,7 @@
   const dgNum = (v, suffix) => (v === null || v === undefined) ? '—' : E(v) + (suffix || '');
 
   function dgHead(j) {
-    const s = j.sentiment, su = j.summary;
+    const s = j.sentiment, su = j.summary, rs = j.riskSummary || {};
     return '<div class="conclusion card dg-head"><div class="lead">「只做龙头」把 ' + E(su.poolCount) +
       ' 只涨停股收敛为 <b>' + E(su.leaderCount) + '</b> 只有明确定位的龙头 / 卡位标的；当前情绪 <b>' + E(s.phase) +
       '</b>（温度 ' + E(s.temperature) + ' / 100，姿态：' + E(s.stance) + '），空间板高度 ' + E(s.maxBoards) + ' 板。' +
@@ -1466,7 +1466,9 @@
       tag('累计板龙 ' + (su.cumLeaderCount || 0), 'purple') +
       tag('名称题材 ' + (su.nameThemeCount || 0), 'warn') +
       tag('昨日连板溢价 ' + (s.prevPremium === null ? '—' : (s.prevPremium > 0 ? '+' : '') + s.prevPremium + '%'), s.prevPremium < 0 ? 'green' : 'red') +
-      tag('候选 ' + su.shown, 'purple') + '</div></div>';
+      tag('候选 ' + su.shown, 'purple') +
+      tag('严重异动预警 ' + ((rs.triggered || 0) + (rs.imminent || 0)), 'red') +
+      tag('交易风险高 ' + (rs.tradeHigh || 0), 'warn') + '</div></div>';
   }
 
   function dgSource(j) {
@@ -1606,6 +1608,69 @@
       '<div class="note-box">' + E(m.caveat || '') + '</div></div>';
   }
 
+  /* ── 严重异动预测 / 交易风险标记（真实日K + 个股公告，不参与评分） ── */
+  function dgRiskBadges(x) {
+    const r = x && x.risk;
+    if (!r || !(r.badges || []).length) return '';
+    return '<div class="dg-risk-badges">' + r.badges.map(b => {
+      const cls = b.kind === 'severe'
+        ? (b.level === 'triggered' || b.level === 'imminent' ? 'rk-sev-high' : 'rk-sev-mid')
+        : (b.level === 'high' ? 'rk-trd-high' : 'rk-trd-mid');
+      return '<span class="dg-risk-badge ' + cls + '" title="' + E(b.title) + '">' + E(b.label) + '</span>';
+    }).join('') + '</div>';
+  }
+
+  function dgRiskMethodCard(j) {
+    const m = j.riskMethodology, meta = j.riskMeta || {};
+    if (!m) return '';
+    return '<div class="card pad dg-risk-method"><div class="dg-card-head"><h4>严重异动预测 · 交易风险标记口径</h4>' +
+      '<span class="small muted">规则化阈值推算，不是交易所认定，也不参与龙头评分</span></div>' +
+      '<div class="dg-risk-method-rules">' +
+      (m.rules || []).map(r => '<div class="pb-step"><b>' + E(r.name) + '</b><span>' + E(r.text) + '</span></div>').join('') +
+      '</div><div class="note-box">' + E(m.caveat || '') + '</div>' +
+      '<div class="small muted">本次覆盖：' + E(meta.klineOk || 0) + '/' + E(meta.klineTotal || 0) +
+      ' 只候选日K可用 · 关联公告 ' + E(meta.annItems || 0) + ' 条（时点 ' + E(meta.annAsOf || '—') + '）· 日K来源 ' +
+      E((meta.klineSources || []).join(' / ') || '不可用') +
+      (meta.error ? ' · <b>部分数据获取失败：' + E(meta.error) + '</b>' : '') + '</div></div>';
+  }
+
+  function dgRiskCard(x) {
+    const r = x && x.risk;
+    const head = '<div class="card pad dg-card dg-risk-card"><div class="dg-card-head"><h4>严重异动预测 · 交易风险</h4>' +
+      '<span class="small muted">真实日K + 个股公告 · 不参与评分</span></div>';
+    if (!r) return head + '<div class="empty">本次未获取到该股的风险数据，系统不会用推测数据填充。</div></div>';
+    const v = r.severe || {}, t = r.trade || {};
+    const cls = (v.level === 'triggered' || v.level === 'imminent') ? 'high'
+      : (v.level === 'near' || v.level === 'watch' ? 'mid' : 'low');
+    const status = '<div class="dg-risk-status ' + cls + '"><b>' + E(v.label || '异动数据不可用') + '</b>' +
+      '<span>交易风险 · ' + E(t.levelLabel || '—') + '（' + E(t.flagCount || 0) + ' 项证据）</span>' +
+      (v.need10 !== null && v.need10 !== undefined && v.need10 > 0
+        ? '<span>距 +100% 阈值约 ' + E(v.need10) + ' 个涨停</span>' : '') + '</div>';
+    const tbl = (v.evidence || []).length
+      ? '<div class="tbl-wrap"><table><thead><tr><th>指标</th><th>数值</th><th>阈值 / 提示线</th><th>判读</th></tr></thead><tbody>' +
+        v.evidence.map(e => '<tr><td>' + E(e.label) + '</td><td><b>' + E(e.value) + '</b></td><td>' + E(e.threshold) +
+          '</td><td class="small muted">' + E(e.note) + '</td></tr>').join('') +
+        '</tbody></table></div>'
+      : '<div class="empty">日K不可用，无法计算阈值距离。</div>';
+    const srcNote = '<div class="small muted">日K来源：' + E(v.source || '不可用') + '（' +
+      (v.adjusted === false ? '不复权' : (v.adjusted === true ? '前复权' : '口径未知')) + '，' +
+      E(v.klineCount || 0) + ' 根，截至 ' + E(v.lastDate || '—') + '）· 关联公告 ' + E(r.annCount || 0) +
+      ' 条 · 板块口径 ' + E(v.board || '—') + '</div>';
+    const action = '<div class="dg-risk-action"><b>条件化提示：</b>' + E(v.action || '') + '</div>';
+    const flags = '<div class="dg-h5">交易风险证据（' + E(t.flagCount || 0) + ' 项，按来源标注）</div>' +
+      ((t.flags || []).length ? t.flags.map(f =>
+        '<div class="dg-risk-flag ' + E(f.severity) + '"><div class="dg-risk-flag-top"><b>' + E(f.tag) + '</b>' +
+        '<span class="mini-tag">' + (f.kind === 'announcement' ? '个股公告' : '量价 / 规则推算') + '</span>' +
+        '<span class="mini-tag">' + (f.severity === 'high' ? '高危' : '一般') + '</span></div>' +
+        '<div class="small muted">' + E(f.detail) + '</div>' +
+        ((f.links || []).length ? '<div class="dg-risk-links">' + f.links.map(l =>
+          (l.url ? '<a href="' + E(l.url) + '" target="_blank" rel="noopener noreferrer">' + E(l.title) + ' ↗</a>' : '') +
+          (l.pdfUrl ? ' <a href="' + E(l.pdfUrl) + '" target="_blank" rel="noopener noreferrer">公告 PDF ↗</a>' : '')
+        ).join('') + '</div>' : '') + '</div>').join('')
+        : '<div class="small muted">未命中公告风险词，量价字段也未触发风险提示线。</div>');
+    return head + status + tbl + srcNote + action + flags + '<div class="note-box">' + E(v.caveat || '') + '</div></div>';
+  }
+
   function dgListItems(j) {
     return (j.list || []).map(x =>
       '<div class="dg-item' + (x.code === S.dgSelected ? ' active' : '') + '" data-code="' + E(x.code) + '">' +
@@ -1616,7 +1681,7 @@
       '<span class="muted">' + E(x.industry) + '</span></div>' +
       '<div class="dg-mini-meters"><span>一致 ' + E(x.consensus) + '</span>' + dgBar(x.consensus, 'blue') +
       '<span>分歧 ' + E(x.divergence) + '</span>' + dgBar(x.divergence, 'red') + '</div>' +
-      '<div class="dg-item-bot">' + E(x.script.title) + '</div></div>').join('');
+      '<div class="dg-item-bot">' + E(x.script.title) + '</div>' + dgRiskBadges(x) + '</div>').join('');
   }
 
   function dgDetailHead(x) {
@@ -1683,7 +1748,7 @@
     const box = $('dgDetail'); if (!box) return;
     const x = (j.list || []).find(a => a.code === S.dgSelected);
     if (!x) { box.innerHTML = '<div class="card empty">请选择左侧标的查看地位依据、一致/分歧拆解与明日剧本</div>'; return; }
-    box.innerHTML = dgDetailHead(x) + dgMeters(x) + dgScriptCard(x) + dgScoreCard(x) + nwDetailCard(x);
+    box.innerHTML = dgDetailHead(x) + dgRiskCard(x) + dgMeters(x) + dgScriptCard(x) + dgScoreCard(x) + nwDetailCard(x);
   }
 
   function renderDragon() {
@@ -1709,7 +1774,7 @@
     $('pane-dragon').innerHTML = dgHead(j) + dgSource(j) + nwPanel() + dgSentimentCard(j) +
       '<div class="dg-grid2">' + dgLadderCard(j) + dgThemesCard(j) + '</div>' +
       dgThemeUnderstandingCard(j) +
-      focus + dgValidationCard(j) + dgMethodCard(j) + body + excl + disc;
+      focus + dgValidationCard(j) + dgMethodCard(j) + dgRiskMethodCard(j) + body + excl + disc;
 
     $('dgReload').onclick = () => loadDragon(true);
     $('dgShowAll').onchange = e => { S.dgOpts.showAll = Number(e.target.value); loadDragon(true); };

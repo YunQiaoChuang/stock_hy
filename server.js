@@ -560,8 +560,13 @@ async function buildDragon(query) {
   delete f._; delete f.force;
   const days = Math.min(15, Math.max(5, Number(f.days) || 12));
 
-  const [pools, history, indices, sectorBoards] = await Promise.all([
-    ds.getPools().catch(() => ({ zt: [], zb: [], qs: [], dt: [], date: '' })),
+  // 先单独拉当日池，再并发拉历史池 / 指数 / 板块：历史池每批会对 push2ex.eastmoney.com
+  // 并发 10+ 个请求，与当日池同时发容易触发上游限流，使当日涨停池偶发返回空名单
+  // （表现为整页「无龙头」）。空结果不缓存，故失败时立即重试一次。
+  const emptyPools = { zt: [], zb: [], qs: [], dt: [], date: '' };
+  let pools = await ds.getPools().catch(() => emptyPools);
+  if (!(pools.zt || []).length) pools = await ds.getPools().catch(() => pools);
+  const [history, indices, sectorBoards] = await Promise.all([
     ds.getPoolFullHistory(days).catch(() => ({ dates: [], byDate: {}, note: '' })),
     ds.getIndices().catch(() => []),
     ds.getSectorBoards().catch(() => ({ industry: [], concept: [] }))
@@ -607,6 +612,36 @@ async function buildDragon(query) {
   };
   const g = an.dragonGame({ pools, history, quotes, indices, options, conceptMap });
 
+  // 严重异动预测 + 交易风险标记：只用真实日K与个股公告，任何上游失败都如实标注「不可用」
+  const riskRows = (g.list || []).slice(0, 60);
+  const riskCodes = [...new Set(riskRows.map(x => String(x.code || '')).filter(c => /^\d{6}$/.test(c)))];
+  let klines = {}, annItems = [], annAsOf = null, riskErr = null;
+  try {
+    const kv = await limitedMap(riskCodes, 4, async c => {
+      try { return { code: c, data: await ds.getKlineData(c, 60) }; }
+      catch (e) { return { code: c, data: null }; }
+    });
+    (kv || []).forEach(x => { if (x && x.data) klines[x.code] = x.data; });
+    if (riskCodes.length) {
+      const ann = await ds.getAnnouncements(riskCodes, Math.max(20, Math.min(100, riskCodes.length * 2))).catch(() => null);
+      annItems = (ann && ann.items) || [];
+      annAsOf = (ann && ann.asOf) || null;
+    }
+  } catch (e) { riskErr = String(e && e.message || e); }
+  const risk = an.dragonRiskEngine({ rows: riskRows, klines, annItems });
+  (g.list || []).forEach(x => { x.risk = risk.byCode[String(x.code)] || null; });
+  (g.excluded || []).forEach(x => { x.risk = risk.byCode[String(x.code)] || null; });
+  g.riskSummary = risk.summary;
+  g.riskMethodology = risk.methodology;
+  g.riskMeta = {
+    codesCount: riskCodes.length, covered: riskCodes.length,
+    truncated: (g.list || []).length > riskCodes.length,
+    klineOk: risk.summary.klineOk, klineTotal: risk.summary.klineTotal,
+    klineSources: risk.summary.klineSources,
+    annItems: annItems.length, annAsOf, error: riskErr,
+    note: risk.metaNote + (riskErr ? ' 本次部分数据获取失败：' + riskErr : '')
+  };
+
   const qTimes = Object.values(quotes).map(x => x && x.ticktime).filter(Boolean).sort();
   const latestQT = qTimes.length ? qTimes[qTimes.length - 1] : null;
   const quoteTick = latestQT && String(latestQT).length >= 14
@@ -631,7 +666,7 @@ async function buildDragon(query) {
       ? '东方财富涨停池当前返回空名单（可能是非交易时段、上游临时不可用或当日无涨停），系统不会用推测数据填充。'
       : null,
     conceptBoardCount: topBoards.length,
-    dataSourceNote: g.metaNote + '；实时溢价快照时点 ' + (quoteTick || '—') + '；指数：腾讯证券；题材理解补充：新浪财经概念 / 行业板块成分映射（' + topBoards.length + ' 个板块）与涨停股名称字面聚类。',
+    dataSourceNote: g.metaNote + '；实时溢价快照时点 ' + (quoteTick || '—') + '；指数：腾讯证券；题材理解补充：新浪财经概念 / 行业板块成分映射（' + topBoards.length + ' 个板块）与涨停股名称字面聚类；严重异动预测 = 日K累计涨幅（' + risk.summary.klineOk + '/' + risk.summary.klineTotal + ' 只可用）+ 个股公告风险词（' + annItems.length + ' 条）。',
     disclaimer: DISCLAIMER
   };
   return { meta, ...g };
