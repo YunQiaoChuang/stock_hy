@@ -89,16 +89,36 @@
     startTimer();
   }
 
+  // 交易时段由后端按北京时间 + 周末判定（meta.state），比浏览器本地时间可靠。
+  // 非交易时段自动暂停刷新，但「立即刷新」始终可用；从非交易切回交易时自动恢复一次。
+  const TRADING_STATES = ['盘中', '集合竞价'];
+  function isTradingNow() {
+    const st = S.data && S.data.meta && S.data.meta.state;
+    return !st || TRADING_STATES.indexOf(st) >= 0; // 首屏尚无数据时按可刷新处理
+  }
+  function refreshCountdown() {
+    const el = $('countdown');
+    if (!el) return;
+    if (S.freq <= 0) { el.textContent = '已暂停'; el.title = '自动刷新已手动关闭'; return; }
+    if (!isTradingNow()) {
+      const st = (S.data && S.data.meta && S.data.meta.state) || '非交易时段';
+      el.textContent = '已暂停（' + st + '）';
+      el.title = st + '，行情不再变动，自动刷新已暂停；可点「立即刷新」手动拉取。';
+      return;
+    }
+    el.textContent = Math.max(0, S.freq - S.tick) + ' 秒';
+    el.title = '每 ' + S.freq + ' 秒自动刷新；非交易时段自动暂停';
+  }
   function startTimer() {
     if (S.timer) clearInterval(S.timer);
     S.timer = setInterval(() => {
-      if (S.freq <= 0) { $('countdown').textContent = '已暂停'; return; }
+      if (S.freq <= 0 || !isTradingNow()) { refreshCountdown(); return; }
       S.tick++;
-      const left = Math.max(0, S.freq - S.tick);
-      $('countdown').textContent = left + ' 秒';
       if (S.tick >= S.freq) { S.tick = 0; refresh(false); }
+      refreshCountdown();
     }, 1000);
-    $('countdown').textContent = S.freq > 0 ? S.freq + ' 秒' : '已暂停';
+    S.tick = 0;
+    refreshCountdown();
   }
 
   function resetFilters() {
@@ -193,6 +213,7 @@
     } finally {
       $('btnRefresh').disabled = false;
       S.tick = 0;
+      refreshCountdown(); // 交易状态变化后，立即同步「下次刷新」显示
     }
   }
 
