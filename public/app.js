@@ -35,9 +35,15 @@
     dgMethodOpen: false, dgValidationOpen: false,
     dgOpts: { days: 12, showAll: 0, sort: 'score', sortDir: 'desc', role: '全部', limit: 60 },
     dgOfflineTimer: null,
+    news: null, newsLoading: false, newsError: null, newsAt: 0, newsSince: null,
+    newsInterval: 30, newsWindow: 72, newsPaused: false, newsFilter: 'all',
+    newsKeyword: '', newsMethodOpen: false, newsShowAll: false,
+    newsTimer: null, newsTickTimer: null, newsNextAt: 0, newsCodes: '',
     en: null, enLoading: false, enError: null, enOpts: { days: 8 }
   };
-  const activeHealth = m => (m.health || []).filter(h => !h.standby);
+  // 消息面三个源只在「明日龙头」模块启用后才调用，未调用前不计入主看板在线率分母
+  const NEWS_KEYS = ['emAnn', 'sinaFlash', 'emFlash'];
+  const activeHealth = m => (m.health || []).filter(h => !h.standby && (NEWS_KEYS.indexOf(h.key) < 0 || !!h.lastTry));
 
   /* ─────────────── 初始化与事件 ─────────────── */
   function init() {
@@ -208,7 +214,10 @@
     [...$('tabs').children].forEach(c => c.classList.toggle('active', c.dataset.tab === t));
     ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'enlighten'].forEach(k => $('pane-' + k).classList.toggle('active', k === t));
     if (t === 'pullback' && !S.pull && !S.pullLoading) loadPullback(false);
-    if (t === 'dragon' && !S.dg && !S.dgLoading) loadDragon(false);
+    if (t === 'dragon') {
+      if (!S.dg && !S.dgLoading) loadDragon(false);
+      setTimeout(startNewsMonitor, 0);
+    } else stopNewsMonitor();
     if (t === 'enlighten' && !S.en && !S.enLoading) loadEnlightenment(false);
     setTimeout(() => { Object.values(S.charts || {}).forEach(c => { try { c.resize(); } catch (e) { } }); }, 60);
   }
@@ -342,7 +351,7 @@
 
       '<div class="sec"><div class="sec-head"><h3>二、主线题材与生命周期</h3>' + src('东方财富涨停池行业归属 + 新浪财经板块行情，交易日 ' + (m.poolDate || '—')) + '</div>' +
       '<div class="grid2">' + (themes || '<div class="empty">当前无涨停题材分组数据</div>') + '</div>' +
-      '<div class="note-box">题材阶段完全由量价结构（涨停扩散数 / 连板高度 / 梯队完整度 / 炸板负反馈率 / 板块涨跌幅）机械推导，未接入新闻与公告数据；阶段判断为前瞻性推演，需次日盘面验证。</div></div>' +
+      '<div class="note-box">题材阶段完全由量价结构（涨停扩散数 / 连板高度 / 梯队完整度 / 炸板负反馈率 / 板块涨跌幅）机械推导，本页评分不纳入新闻与公告数据（消息面见「明日龙头」模块独立监控）；阶段判断为前瞻性推演，需次日盘面验证。</div></div>' +
 
       '<div class="sec"><div class="sec-head"><h3>三、明日博弈焦点</h3><span class="src">依据：leader-game 涨停结构 + theme-lifecycle 阶段研判</span></div><div class="grid3">' + focus + '</div></div>' +
 
@@ -686,7 +695,7 @@
       '<div class="sec"><div class="sec-head"><h3>连板股技术评分对比</h3>' + src('本系统技术指标计算，输入为腾讯证券前复权日K') + '</div><div class="card pad"><div id="chartLowScore" class="chart"></div></div></div>' +
       '<div class="sec"><div class="sec-head"><h3>逐只研判（' + rows.length + ' 只）</h3>' + src('东方财富涨停池 + 腾讯证券行情/日K + 新浪财经板块，交易日 ' + (m.poolDate || '—')) + '</div>' +
       (cards || '<div class="card empty">当前筛选条件下无连板标的。可放宽「最低连板数 / 流通市值 / 板块」条件；若为非交易时段，涨停池展示最近一个交易日数据。</div>') + '</div>' +
-      '<div class="disclaimer" style="margin-top:14px"><strong>风险提示</strong>：连板低吸属于高波动策略，高位股接力赔率最差；题材阶段为量价结构推导的前瞻判断，可能因消息面变化而失效。本模块不含新闻、公告与龙虎榜数据，所有结论仅供研究参考，不构成投资建议。</div>';
+      '<div class="disclaimer" style="margin-top:14px"><strong>风险提示</strong>：连板低吸属于高波动策略，高位股接力赔率最差；题材阶段为量价结构推导的前瞻判断，可能因消息面变化而失效。本模块评分不纳入新闻、公告与龙虎榜数据（消息面见「明日龙头」模块独立监控），所有结论仅供研究参考，不构成投资建议。</div>';
 
     $('pane-lowbuy').querySelectorAll('.lb-head[data-toggle]').forEach(el => {
       el.onclick = () => {
@@ -1452,7 +1461,7 @@
   const dgNum = (v, suffix) => (v === null || v === undefined) ? '—' : E(v) + (suffix || '');
 
   function dgHead(j) {
-    const s = j.sentiment, su = j.summary;
+    const s = j.sentiment, su = j.summary, rs = j.riskSummary || {};
     return '<div class="conclusion card dg-head"><div class="lead">「只做龙头」把 ' + E(su.poolCount) +
       ' 只涨停股收敛为 <b>' + E(su.leaderCount) + '</b> 只有明确定位的龙头 / 卡位标的；当前情绪 <b>' + E(s.phase) +
       '</b>（温度 ' + E(s.temperature) + ' / 100，姿态：' + E(s.stance) + '），空间板高度 ' + E(s.maxBoards) + ' 板。' +
@@ -1466,7 +1475,9 @@
       tag('累计板龙 ' + (su.cumLeaderCount || 0), 'purple') +
       tag('名称题材 ' + (su.nameThemeCount || 0), 'warn') +
       tag('昨日连板溢价 ' + (s.prevPremium === null ? '—' : (s.prevPremium > 0 ? '+' : '') + s.prevPremium + '%'), s.prevPremium < 0 ? 'green' : 'red') +
-      tag('候选 ' + su.shown, 'purple') + '</div></div>';
+      tag('候选 ' + su.shown, 'purple') +
+      tag('严重异动预警 ' + ((rs.triggered || 0) + (rs.imminent || 0)), 'red') +
+      tag('交易风险高 ' + (rs.tradeHigh || 0), 'warn') + '</div></div>';
   }
 
   function dgSource(j) {
@@ -1606,6 +1617,69 @@
       '<div class="note-box">' + E(m.caveat || '') + '</div></div>';
   }
 
+  /* ── 严重异动预测 / 交易风险标记（真实日K + 个股公告，不参与评分） ── */
+  function dgRiskBadges(x) {
+    const r = x && x.risk;
+    if (!r || !(r.badges || []).length) return '';
+    return '<div class="dg-risk-badges">' + r.badges.map(b => {
+      const cls = b.kind === 'severe'
+        ? (b.level === 'triggered' || b.level === 'imminent' ? 'rk-sev-high' : 'rk-sev-mid')
+        : (b.level === 'high' ? 'rk-trd-high' : 'rk-trd-mid');
+      return '<span class="dg-risk-badge ' + cls + '" title="' + E(b.title) + '">' + E(b.label) + '</span>';
+    }).join('') + '</div>';
+  }
+
+  function dgRiskMethodCard(j) {
+    const m = j.riskMethodology, meta = j.riskMeta || {};
+    if (!m) return '';
+    return '<div class="card pad dg-risk-method"><div class="dg-card-head"><h4>严重异动预测 · 交易风险标记口径</h4>' +
+      '<span class="small muted">规则化阈值推算，不是交易所认定，也不参与龙头评分</span></div>' +
+      '<div class="dg-risk-method-rules">' +
+      (m.rules || []).map(r => '<div class="pb-step"><b>' + E(r.name) + '</b><span>' + E(r.text) + '</span></div>').join('') +
+      '</div><div class="note-box">' + E(m.caveat || '') + '</div>' +
+      '<div class="small muted">本次覆盖：' + E(meta.klineOk || 0) + '/' + E(meta.klineTotal || 0) +
+      ' 只候选日K可用 · 关联公告 ' + E(meta.annItems || 0) + ' 条（时点 ' + E(meta.annAsOf || '—') + '）· 日K来源 ' +
+      E((meta.klineSources || []).join(' / ') || '不可用') +
+      (meta.error ? ' · <b>部分数据获取失败：' + E(meta.error) + '</b>' : '') + '</div></div>';
+  }
+
+  function dgRiskCard(x) {
+    const r = x && x.risk;
+    const head = '<div class="card pad dg-card dg-risk-card"><div class="dg-card-head"><h4>严重异动预测 · 交易风险</h4>' +
+      '<span class="small muted">真实日K + 个股公告 · 不参与评分</span></div>';
+    if (!r) return head + '<div class="empty">本次未获取到该股的风险数据，系统不会用推测数据填充。</div></div>';
+    const v = r.severe || {}, t = r.trade || {};
+    const cls = (v.level === 'triggered' || v.level === 'imminent') ? 'high'
+      : (v.level === 'near' || v.level === 'watch' ? 'mid' : 'low');
+    const status = '<div class="dg-risk-status ' + cls + '"><b>' + E(v.label || '异动数据不可用') + '</b>' +
+      '<span>交易风险 · ' + E(t.levelLabel || '—') + '（' + E(t.flagCount || 0) + ' 项证据）</span>' +
+      (v.need10 !== null && v.need10 !== undefined && v.need10 > 0
+        ? '<span>距 +100% 阈值约 ' + E(v.need10) + ' 个涨停</span>' : '') + '</div>';
+    const tbl = (v.evidence || []).length
+      ? '<div class="tbl-wrap"><table><thead><tr><th>指标</th><th>数值</th><th>阈值 / 提示线</th><th>判读</th></tr></thead><tbody>' +
+        v.evidence.map(e => '<tr><td>' + E(e.label) + '</td><td><b>' + E(e.value) + '</b></td><td>' + E(e.threshold) +
+          '</td><td class="small muted">' + E(e.note) + '</td></tr>').join('') +
+        '</tbody></table></div>'
+      : '<div class="empty">日K不可用，无法计算阈值距离。</div>';
+    const srcNote = '<div class="small muted">日K来源：' + E(v.source || '不可用') + '（' +
+      (v.adjusted === false ? '不复权' : (v.adjusted === true ? '前复权' : '口径未知')) + '，' +
+      E(v.klineCount || 0) + ' 根，截至 ' + E(v.lastDate || '—') + '）· 关联公告 ' + E(r.annCount || 0) +
+      ' 条 · 板块口径 ' + E(v.board || '—') + '</div>';
+    const action = '<div class="dg-risk-action"><b>条件化提示：</b>' + E(v.action || '') + '</div>';
+    const flags = '<div class="dg-h5">交易风险证据（' + E(t.flagCount || 0) + ' 项，按来源标注）</div>' +
+      ((t.flags || []).length ? t.flags.map(f =>
+        '<div class="dg-risk-flag ' + E(f.severity) + '"><div class="dg-risk-flag-top"><b>' + E(f.tag) + '</b>' +
+        '<span class="mini-tag">' + (f.kind === 'announcement' ? '个股公告' : '量价 / 规则推算') + '</span>' +
+        '<span class="mini-tag">' + (f.severity === 'high' ? '高危' : '一般') + '</span></div>' +
+        '<div class="small muted">' + E(f.detail) + '</div>' +
+        ((f.links || []).length ? '<div class="dg-risk-links">' + f.links.map(l =>
+          (l.url ? '<a href="' + E(l.url) + '" target="_blank" rel="noopener noreferrer">' + E(l.title) + ' ↗</a>' : '') +
+          (l.pdfUrl ? ' <a href="' + E(l.pdfUrl) + '" target="_blank" rel="noopener noreferrer">公告 PDF ↗</a>' : '')
+        ).join('') + '</div>' : '') + '</div>').join('')
+        : '<div class="small muted">未命中公告风险词，量价字段也未触发风险提示线。</div>');
+    return head + status + tbl + srcNote + action + flags + '<div class="note-box">' + E(v.caveat || '') + '</div></div>';
+  }
+
   function dgListItems(j) {
     return (j.list || []).map(x =>
       '<div class="dg-item' + (x.code === S.dgSelected ? ' active' : '') + '" data-code="' + E(x.code) + '">' +
@@ -1616,7 +1690,7 @@
       '<span class="muted">' + E(x.industry) + '</span></div>' +
       '<div class="dg-mini-meters"><span>一致 ' + E(x.consensus) + '</span>' + dgBar(x.consensus, 'blue') +
       '<span>分歧 ' + E(x.divergence) + '</span>' + dgBar(x.divergence, 'red') + '</div>' +
-      '<div class="dg-item-bot">' + E(x.script.title) + '</div></div>').join('');
+      '<div class="dg-item-bot">' + E(x.script.title) + '</div>' + dgRiskBadges(x) + '</div>').join('');
   }
 
   function dgDetailHead(x) {
@@ -1683,7 +1757,7 @@
     const box = $('dgDetail'); if (!box) return;
     const x = (j.list || []).find(a => a.code === S.dgSelected);
     if (!x) { box.innerHTML = '<div class="card empty">请选择左侧标的查看地位依据、一致/分歧拆解与明日剧本</div>'; return; }
-    box.innerHTML = dgDetailHead(x) + dgMeters(x) + dgScriptCard(x) + dgScoreCard(x);
+    box.innerHTML = dgDetailHead(x) + dgRiskCard(x) + dgMeters(x) + dgScriptCard(x) + dgScoreCard(x) + nwDetailCard(x);
   }
 
   function renderDragon() {
@@ -1706,10 +1780,10 @@
         '<span class="tag" title="' + E(x.roleReason) + '">' + E(x.name) + ' ' + E(x.boardLabel || (x.boards + '板')) + ' · ' + E(x.role) + '</span>').join('') +
       (j.excluded.length > 18 ? '<span class="small muted">等共 ' + E(j.excluded.length) + ' 只</span>' : '') + '</div></div>' : '';
     const disc = '<div class="disclaimer" style="margin-top:14px"><strong>免责声明</strong>：以上内容基于公开数据和量化分析，仅供参考，不构成投资建议。市场有风险，投资需谨慎。任何投资决策应结合个人风险承受能力、资金状况和投资目标独立判断，必要时咨询持牌专业机构。过往表现不预示未来收益。</div>';
-    $('pane-dragon').innerHTML = dgHead(j) + dgSource(j) + dgSentimentCard(j) +
+    $('pane-dragon').innerHTML = dgHead(j) + dgSource(j) + nwPanel() + dgSentimentCard(j) +
       '<div class="dg-grid2">' + dgLadderCard(j) + dgThemesCard(j) + '</div>' +
       dgThemeUnderstandingCard(j) +
-      focus + dgValidationCard(j) + dgMethodCard(j) + body + excl + disc;
+      focus + dgValidationCard(j) + dgMethodCard(j) + dgRiskMethodCard(j) + body + excl + disc;
 
     $('dgReload').onclick = () => loadDragon(true);
     $('dgShowAll').onchange = e => { S.dgOpts.showAll = Number(e.target.value); loadDragon(true); };
@@ -1729,6 +1803,7 @@
       };
     });
     renderDragonDetail();
+    renderNewsPanel();
   }
 
   async function fetchDragonJson(q) {
@@ -1773,6 +1848,14 @@
       if (!list.some(x => x.code === S.dgSelected)) S.dgSelected = list.length ? list[0].code : null;
       renderDragon();
       $('badgeDragon').textContent = list.length;
+      const codes = list.map(x => x.code).join(',');
+      const changed = S.newsCodes !== codes;
+      S.newsCodes = codes;
+      if (S.tab === 'dragon') {
+        if (!S.news) startNewsMonitor();
+        else if (changed) loadNews(false);
+        else scheduleNews(S.newsInterval);
+      }
     } catch (e) {
       S.dgError = e.message;
       const offline = isConnError(e);
@@ -1784,6 +1867,238 @@
       $('dgRetry').onclick = () => loadDragon(true);
       if (offline) watchService('dragon');
     } finally { S.dgLoading = false; }
+  }
+
+  /* ─────────────── 消息面实时监控（明日龙头） ─────────────── */
+  const nwTime = t => { const s = String(t || ''); return s.length >= 16 ? s.slice(5, 16) : (s || '—'); };
+  const nwToneCls = x => x.tone === 'bull' ? 'nw-bull' : (x.tone === 'bear' ? 'nw-bear' : 'nw-neutral');
+  const nwToneLabel = x => (x.toneLabel || '中性') + (x.severity === 'high' && x.tone === 'bear' ? ' · 高危' : '');
+
+  function nwPanel() {
+    return '<div class="card pad nw-card" id="nwCard"><div id="nwBox"></div></div>';
+  }
+
+  function nwFilteredItems() {
+    const items = (S.news && S.news.items) || [];
+    const f = S.newsFilter, kw = String(S.newsKeyword || '').trim().toLowerCase();
+    return items.filter(x => {
+      if (f === 'linked' && !(x.matched || []).length) return false;
+      if (f === 'bear' && x.tone !== 'bear') return false;
+      if (f === 'bull' && x.tone !== 'bull') return false;
+      if (f === 'high' && !(x.tone === 'bear' && x.severity === 'high')) return false;
+      if (f === 'new' && !x.isNew) return false;
+      if (kw) {
+        const hay = [x.title, x.text, (x.matched || []).map(m => m.name).join(' ')].join(' ').toLowerCase();
+        if (hay.indexOf(kw) < 0) return false;
+      }
+      return true;
+    });
+  }
+
+  function nwItemHtml(x, compact) {
+    const matched = (x.matched || []).length
+      ? x.matched.map(m => '<span class="nw-code' + (m.confidence === '精确' ? ' exact' : '') + '" title="' + E(m.method) + '">' +
+        E(m.name) + ' ' + E(m.code) + ' · ' + E(m.confidence) + '</span>').join('')
+      : '<span class="small muted">未精确关联个股（市场 / 政策面）</span>';
+    const hits = (x.hits || []).length ? x.hits.map(h => E(h.words.join('、'))).join(' / ') : '—';
+    const links = (x.url ? '<a href="' + E(x.url) + '" target="_blank" rel="noopener noreferrer">原文 ↗</a>' : '') +
+      (x.pdfUrl ? ' <a href="' + E(x.pdfUrl) + '" target="_blank" rel="noopener noreferrer">公告 PDF ↗</a>' : '');
+    const impact = (x.isLeader && (x.impact || []).length)
+      ? '<div class="nw-impact"><b>条件化提示</b>' + x.impact.slice(0, compact ? 1 : 2).map(p => '<div>· ' + E(p) + '</div>').join('') + '</div>'
+      : '';
+    return '<div class="nw-item' + (x.isNew ? ' nw-new' : '') + '">' +
+      '<div class="nw-item-top"><span class="nw-time">' + E(nwTime(x.timeText)) + '</span>' +
+      '<span class="nw-kind">' + E(x.kindLabel) + '</span>' +
+      '<span class="nw-tone ' + nwToneCls(x) + '">' + E(nwToneLabel(x)) + '</span>' +
+      '<span class="nw-scope">' + E(x.scope) + '</span>' +
+      (x.isNew ? '<span class="nw-new-badge">NEW</span>' : '') + '</div>' +
+      '<div class="nw-title">' + (x.url ? '<a href="' + E(x.url) + '" target="_blank" rel="noopener noreferrer">' + E(x.title) + '</a>' : E(x.title)) + '</div>' +
+      '<div class="nw-meta">' + matched + '<span class="small muted">' + E(x.media || x.source) + ' · 命中词 ' + hits + '</span>' + links + '</div>' +
+      (compact ? '' : '<div class="nw-basis small muted">' + E(x.basis) + '</div>') +
+      impact + '</div>';
+  }
+
+  function nwListHtml() {
+    const list = nwFilteredItems();
+    const shown = S.newsShowAll ? list.slice(0, 80) : list.slice(0, 12);
+    if (!list.length) return '<div class="nw-empty-line">当前筛选下没有消息。系统不会用推测数据填充；可调宽时间窗口或切换筛选。</div>';
+    return shown.map(x => nwItemHtml(x, false)).join('') +
+      (list.length > shown.length ? '<div class="small muted nw-more-note">仅显示最近 ' + shown.length + ' 条，共 ' + list.length + ' 条；点「显示全部」展开。</div>' : '');
+  }
+
+  function renderNewsPanel() {
+    const box = $('nwBox'); if (!box) return;
+    const j = S.news, m = j && j.meta, su = j && j.summary;
+    const err = S.newsError;
+    const status = err ? '暂不可用' : (S.newsPaused ? '已暂停' : (S.newsLoading ? '刷新中' : '监控中'));
+    const statusCls = err ? 'off' : (S.newsPaused ? 'pause' : 'on');
+    const intervalOpts = [15, 30, 60].map(n => '<option value="' + n + '"' + (S.newsInterval === n ? ' selected' : '') + '>' + n + ' 秒</option>').join('');
+    const windowOpts = [[6, '近 6 小时'], [24, '近 24 小时'], [48, '近 48 小时'], [72, '近 3 天'], [168, '近 7 天']]
+      .map(p => '<option value="' + p[0] + '"' + (S.newsWindow === p[0] ? ' selected' : '') + '>' + E(p[1]) + '</option>').join('');
+    const filterOpts = [['all', '全部消息'], ['linked', '仅关联个股'], ['bear', '仅利空'], ['bull', '仅利多'], ['high', '仅高危风险'], ['new', '仅本轮新增']]
+      .map(p => '<option value="' + p[0] + '"' + (S.newsFilter === p[0] ? ' selected' : '') + '>' + E(p[1]) + '</option>').join('');
+    const srcDetail = m ? '（' + (m.sources || []).map(s => E(s.label) + (s.ok ? '✓' : '✗')).join(' ') + '）' : '';
+
+    const head = '<div class="nw-head"><div class="nw-title-line"><h4>消息面 · 实时监控</h4>' +
+      '<span class="nw-status ' + statusCls + '" id="nwStatus"><i></i>' + status + '</span>' +
+      '<span class="small muted">公告 / 7×24 快讯 / 财经资讯 · 规则归类</span></div>' +
+      '<div class="nw-ctl">' +
+      '<label class="small muted">轮询 <select class="sel" id="nwInterval">' + intervalOpts + '</select></label>' +
+      '<label class="small muted">窗口 <select class="sel" id="nwWindow">' + windowOpts + '</select></label>' +
+      '<label class="small muted">筛选 <select class="sel" id="nwFilter">' + filterOpts + '</select></label>' +
+      '<input class="nw-input" id="nwKeyword" placeholder="搜索标题 / 个股" value="' + E(S.newsKeyword) + '">' +
+      '<button class="btn" id="nwPause">' + (S.newsPaused ? '继续监控' : '暂停') + '</button>' +
+      '<button class="btn btn-primary" id="nwReload">立即刷新</button>' +
+      '<button class="btn" id="nwMethod">' + (S.newsMethodOpen ? '收起' : '查看') + '监控口径</button>' +
+      '</div></div>';
+
+    const statusbar = '<div class="nw-statusbar">' +
+      '<span class="small muted">上次刷新 <b>' + (S.newsAt ? E(new Date(S.newsAt).toTimeString().slice(0, 8)) : '—') + '</b></span>' +
+      '<span class="small muted">下次 <b id="nwCountdown">' + (S.newsPaused ? '已暂停' : '—') + '</b></span>' +
+      '<span class="small muted">数据源 <b>' + (m ? E(m.sourcesOnline) + '/' + E(m.sourcesTotal) : '—') + '</b> 在线' + srcDetail + '</span>' +
+      (m ? '<span class="small muted">候选 ' + E(m.codesCount) + ' 只 · 公告 ' + E(m.annCount) + ' 条 / 快讯 ' + E(m.flashCount) + ' 条 · 服务端 ' + E(m.elapsedMs) + 'ms</span>' : '') +
+      '<span class="small muted">口径：北京时间 · 公开接口轮询，非交易所官方推送</span></div>' +
+      (err ? '<div class="nw-error"><b>消息源暂不可用：</b>' + E(err) + '（' + (isConnError({ message: err }) ? E(SERVICE_HINT) : '上游接口临时异常') + '）下次轮询会自动重试，已有消息保留展示。</div>' : '');
+
+    const kpis = su ? [
+      ['关联候选利多', su.byToneLeader.bull, 'nw-bull'], ['关联候选利空', su.byToneLeader.bear, 'nw-bear'],
+      ['高危风险', su.highRisk, 'nw-warn'], ['关联候选', su.leaderCount, 'nw-purple'],
+      ['本轮新增', m ? m.newCount : 0, 'nw-blue'], ['消息总数', su.total, '']
+    ].map(p => '<div class="nw-kpi"><span>' + E(p[0]) + '</span><b class="' + p[2] + '">' + E(p[1]) + '</b></div>').join('') : '';
+
+    const alerts = (j && j.alerts) || [];
+    const alertHtml = '<div class="nw-alerts"><div class="nw-h5">个股预警 <span class="small muted">精确关联当前候选 · 高危优先 · 最多 6 条</span></div>' +
+      (alerts.length ? alerts.slice(0, 6).map(x => nwItemHtml(x, true)).join('')
+        : '<div class="nw-empty-line">' + (j ? '当前窗口内未监控到与候选精确关联的利空 / 利多消息；系统不会填充推测数据。' : '正在建立首轮消息基线…') + '</div>') + '</div>';
+
+    const list = nwFilteredItems();
+    const stream = j ? '<div class="nw-stream"><div class="nw-h5">实时消息流 <span class="small muted">共 ' + E(list.length) + ' 条 · 按时间倒序</span></div>' +
+      '<div id="nwList">' + nwListHtml() + '</div>' +
+      (list.length > 12 ? '<button class="btn" id="nwMore">' + (S.newsShowAll ? '收起' : '显示全部 ' + list.length + ' 条') + '</button>' : '') + '</div>' : '';
+
+    const method = j && j.methodology ? '<div class="nw-method" id="nwMethodBox" style="display:' + (S.newsMethodOpen ? '' : 'none') + '">' +
+      j.methodology.rules.map(r => '<div class="nw-rule"><b>' + E(r.name) + '</b><span>' + E(r.text) + '</span></div>').join('') +
+      '<div class="note-box">' + E(j.methodology.caveat) + '</div></div>' : '';
+
+    const foot = '<div class="nw-foot small muted">' + (m ? E(m.note) : '首轮加载将建立消息基线，之后按轮询间隔标记新增。') +
+      ' · 消息面不参与龙头评分，也不改写一致度 / 分歧度与明日剧本；不构成投资建议。</div>';
+
+    box.innerHTML = head + statusbar + (kpis ? '<div class="nw-kpis">' + kpis + '</div>' : '') +
+      (err ? '' : alertHtml + stream) + method + foot;
+
+    const bind = (id, ev, fn) => { const el = $(id); if (el) el[ev] = fn; };
+    bind('nwInterval', 'onchange', e => { S.newsInterval = Number(e.target.value); scheduleNews(S.newsInterval); renderNewsPanel(); });
+    bind('nwWindow', 'onchange', e => { S.newsWindow = Number(e.target.value); loadNews(true); });
+    bind('nwFilter', 'onchange', e => { S.newsFilter = e.target.value; renderNewsPanel(); });
+    bind('nwKeyword', 'oninput', e => {
+      S.newsKeyword = e.target.value;
+      const el = $('nwList'); if (el) el.innerHTML = nwListHtml();
+    });
+    bind('nwPause', 'onclick', () => {
+      S.newsPaused = !S.newsPaused;
+      if (S.newsPaused) { if (S.newsTimer) { clearTimeout(S.newsTimer); S.newsTimer = null; } S.newsNextAt = 0; }
+      else { scheduleNews(S.newsInterval); loadNews(false); }
+      renderNewsPanel();
+    });
+    bind('nwReload', 'onclick', () => loadNews(true));
+    bind('nwMethod', 'onclick', () => {
+      S.newsMethodOpen = !S.newsMethodOpen;
+      const el = $('nwMethodBox'); if (el) el.style.display = S.newsMethodOpen ? '' : 'none';
+      $('nwMethod').textContent = (S.newsMethodOpen ? '收起' : '查看') + '监控口径';
+    });
+    bind('nwMore', 'onclick', () => { S.newsShowAll = !S.newsShowAll; renderNewsPanel(); });
+  }
+
+  /** 龙头详情内的该股消息（精确 / 字面匹配都列，标注匹配方式） */
+  function nwDetailCard(x) {
+    const j = S.news;
+    const head = '<div class="card pad nw-detail"><div class="dg-h5">消息面 · 该股关联（近 ' + E(j ? j.meta.windowHours : S.newsWindow) + ' 小时）</div>';
+    if (!j) return head + '<div class="small muted">消息监控尚未加载或已暂停。</div></div>';
+    const rows = (j.items || []).filter(it => (it.matched || []).some(m => m.code === x.code)).slice(0, 6);
+    if (!rows.length) return head + '<div class="small muted">近 ' + E(j.meta.windowHours) +
+      ' 小时未监控到与该股关联的公告 / 快讯；系统不会用推测数据填充，重大事项请点交易所公告原文核实。</div></div>';
+    return head + rows.map(it => {
+      const mm = (it.matched || []).find(m => m.code === x.code) || {};
+      return '<div class="nw-detail-row"><span class="nw-tone ' + nwToneCls(it) + '">' + E(nwToneLabel(it)) + '</span>' +
+        '<span class="nw-detail-time">' + E(nwTime(it.timeText)) + '</span>' +
+        (it.isNew ? '<span class="nw-new-badge">NEW</span>' : '') +
+        '<div class="nw-detail-title">' + (it.url ? '<a href="' + E(it.url) + '" target="_blank" rel="noopener noreferrer">' + E(it.title) + '</a>' : E(it.title)) + '</div>' +
+        '<div class="small muted">' + E(it.kindLabel) + ' · ' + E(it.media || it.source) + ' · 关联方式 ' + E(mm.method || '—') + '</div>' +
+        ((it.impact || []).length ? '<div class="nw-impact-mini">' + E(it.impact[0]) + '</div>' : '') + '</div>';
+    }).join('') + '<div class="small muted">关键词规则归类，务必点开原文核实；消息面不参与本页评分。</div></div>';
+  }
+
+  /** 只更新状态徽标，避免每次轮询重绘整块面板打断关键字输入 */
+  function updateNwStatus() {
+    const el = $('nwStatus'); if (!el) return;
+    const st = S.newsError ? '暂不可用' : (S.newsPaused ? '已暂停' : (S.newsLoading ? '刷新中' : '监控中'));
+    const cls = S.newsError ? 'off' : (S.newsPaused ? 'pause' : 'on');
+    el.className = 'nw-status ' + cls;
+    el.innerHTML = '<i></i>' + st;
+  }
+
+  function scheduleNews(sec) {
+    if (S.newsTimer) { clearTimeout(S.newsTimer); S.newsTimer = null; }
+    if (S.newsPaused || S.tab !== 'dragon') { S.newsNextAt = 0; return; }
+    const s = Math.max(5, Number(sec) || 30);
+    S.newsNextAt = Date.now() + s * 1000;
+    S.newsTimer = setTimeout(() => {
+      S.newsTimer = null;
+      if (!S.newsPaused && S.tab === 'dragon') loadNews(false);
+    }, s * 1000);
+  }
+
+  function startNewsTicker() {
+    if (S.newsTickTimer) clearInterval(S.newsTickTimer);
+    S.newsTickTimer = setInterval(() => {
+      const el = $('nwCountdown'); if (!el) return;
+      if (S.newsPaused || !S.newsNextAt) { el.textContent = S.newsPaused ? '已暂停' : '—'; return; }
+      el.textContent = Math.max(0, Math.ceil((S.newsNextAt - Date.now()) / 1000)) + ' 秒后';
+    }, 1000);
+  }
+
+  function stopNewsMonitor() {
+    if (S.newsTimer) { clearTimeout(S.newsTimer); S.newsTimer = null; }
+    if (S.newsTickTimer) { clearInterval(S.newsTickTimer); S.newsTickTimer = null; }
+    S.newsNextAt = 0;
+  }
+
+  function startNewsMonitor() {
+    if (S.tab !== 'dragon') return;
+    startNewsTicker();
+    if (!S.news && !S.newsLoading) loadNews(false);
+    else if (!S.newsPaused) scheduleNews(S.newsInterval);
+  }
+
+  async function loadNews(force) {
+    if (S.newsLoading) return;
+    S.newsLoading = true;
+    updateNwStatus();
+    const q = new URLSearchParams();
+    q.set('window', String(S.newsWindow));
+    q.set('scope', Number(S.dgOpts.showAll) === 1 ? 'pool' : 'leaders');
+    q.set('limit', '60');
+    const codes = ((S.dg && S.dg.list) || []).map(x => x.code).filter(Boolean).slice(0, 60);
+    if (codes.length) q.set('codes', codes.join(','));
+    if (S.newsSince) q.set('since', S.newsSince);
+    if (force) q.set('force', '1');
+    try {
+      const r = await fetch('/api/news?' + q.toString(), { cache: 'no-store' });
+      let j;
+      try { j = await r.json(); }
+      catch (_) { throw new Error('服务返回了非 JSON 响应（HTTP ' + r.status + '）'); }
+      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+      S.news = j; S.newsAt = Date.now(); S.newsSince = j.meta.generatedAt; S.newsError = null;
+      renderNewsPanel();
+      if (S.dg) renderDragonDetail();
+    } catch (e) {
+      S.newsError = String(e && e.message || e);
+      if ($('nwBox')) renderNewsPanel();
+    } finally {
+      S.newsLoading = false;
+      updateNwStatus();
+      if (S.tab === 'dragon' && !S.newsPaused) scheduleNews(S.newsInterval);
+    }
   }
 
   /* ─────────────── 页脚 ─────────────── */
@@ -1798,12 +2113,13 @@
       '行业 / 概念板块：新浪财经板块行情<br>' +
       '服务端生成时点：' + E(m.generatedAt) + '，耗时 ' + E(m.elapsedMs) + ' ms；北京时间口径 ' + E(m.now);
     $('healthList').innerHTML = (m.health || []).map(h =>
-      '<div class="health-item"><span class="hdot' + (h.ok ? '' : (h.degraded ? ' warn' : ' bad')) + '"></span><b>' + E(h.label) + (h.sourceLabel ? ' · ' + E(h.sourceLabel) : '') + '</b>' +
-      (h.standby ? '<span class="mini-tag">备用源</span>' : '') +
+      '<div class="health-item"><span class="hdot' + (h.ok || (!h.lastTry && NEWS_KEYS.indexOf(h.key) >= 0) ? '' : (h.degraded ? ' warn' : ' bad')) + '"></span><b>' + E(h.label) + (h.sourceLabel ? ' · ' + E(h.sourceLabel) : '') + '</b>' +
+      (h.standby || (!h.lastTry && NEWS_KEYS.indexOf(h.key) >= 0) ? '<span class="mini-tag">' + (h.standby ? '备用源' : '按需') + '</span>' : '') +
       (h.degraded ? '<span class="mini-tag" style="color:var(--warn)">已降级</span>' : '') +
       '<span class="muted">' + (h.ok ? '在线 · ' + E(h.rows) + ' 条 · ' + E(h.latency) + 'ms'
         : (h.degraded ? '降级 · ' + E(h.error || '备用源接管')
-          : (h.standby ? '未启用（主源可用时不调用）' : '异常 · ' + E(h.error || '未知')))) + '</span></div>'
+          : (h.standby ? '未启用（主源可用时不调用）'
+            : (!h.lastTry && NEWS_KEYS.indexOf(h.key) >= 0 ? '待加载（「明日龙头」启用后调用）' : '异常 · ' + E(h.error || '未知'))))) + '</span></div>'
     ).join('') +
       ((m.health || []).some(h => h.key === 'qqKline' && (h.degraded || !h.ok)) && (m.health || []).some(h => h.standby && h.ok)
         ? '<div class="note-box" style="margin-top:8px"><b>日K口径提示：</b>腾讯前复权日K被 WAF 限流，系统已自动切换「新浪财经日K（不复权）」并进入 2 分钟冷却，冷却结束后自动探活恢复前复权口径。使用备用源期间，历史价位划线、支撑位与回撤测算可能与前复权口径不一致，相关模块已如实标注；请以交易所行情为准。</div>' : '');
