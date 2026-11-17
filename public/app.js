@@ -319,13 +319,36 @@
     const byBoard = new Map();
     ztAll.forEach(x => { const b = Number(x.boards) || 1; if (!byBoard.has(b)) byBoard.set(b, []); byBoard.get(b).push(x); });
     const boardOfCell = b => b >= 5 ? 'em-tier-5' : b === 4 ? 'em-tier-4' : b === 3 ? 'em-tier-3' : b === 2 ? 'em-tier-2' : 'em-tier-1';
+    // 板块地位：同行业涨停股内，按「连板高度 + 封单强度 + 累计涨停次数 + 首封时间」机械判定
+    const sectorMap = new Map();
+    ztAll.forEach(x => { const k = x.industry || '未分类'; if (!sectorMap.has(k)) sectorMap.set(k, []); sectorMap.get(k).push(x); });
+    const sectorRole = new Map();
+    sectorMap.forEach((list, ind) => {
+      const bOf = x => Number(x.boards) || 1, sOf = x => Number(x.sealFundRatio) || 0;
+      const cOf = x => Number(x.statCount) || bOf(x);
+      const maxB = Math.max(...list.map(bOf)), maxS = Math.max(...list.map(sOf)), maxC = Math.max(...list.map(cOf));
+      list.forEach(x => {
+        let role = '', reason = '';
+        if (list.length === 1) { role = '独苗'; reason = '行业内当日仅此 1 只涨停，无板块效应'; }
+        else if (bOf(x) === maxB && maxB >= 2 && sOf(x) === maxS) { role = '板块龙头'; reason = '行业内连板最高 ' + bOf(x) + ' 板且封单比最强 ' + N(maxS) + '%'; }
+        else if (cOf(x) === maxC && maxC > bOf(x) && cOf(x) >= 3) { role = '反包核心'; reason = '累计 ' + x.statDays + ' 天 ' + cOf(x) + ' 板，为行业内累计涨停最多'; }
+        else if (bOf(x) === maxB && maxB >= 2) { role = '题材龙'; reason = '行业内连板最高 ' + bOf(x) + ' 板，但封单比非最强'; }
+        else if (sOf(x) === maxS && maxS > 0) { role = '封单核心'; reason = '行业内封单比最强 ' + N(maxS) + '%（' + bOf(x) + ' 板）'; }
+        else if (bOf(x) >= 2) { role = '板块跟风'; reason = bOf(x) + ' 板，低于行业最高 ' + maxB + ' 板'; }
+        else { role = '首板跟随'; reason = '首板，行业共 ' + list.length + ' 只涨停'; }
+        sectorRole.set(x.code, { role, reason, count: list.length, maxB });
+      });
+    });
+    const roleCls = r => r === '板块龙头' ? 'lead' : r === '反包核心' || r === '题材龙' || r === '封单核心' ? 'core' : r === '独苗' ? 'solo' : '';
     const stockCell = x => {
       const seal = Number(x.sealFundRatio) || 0, br = Number(x.brokenCount) || 0;
       const cls = seal >= 1 ? 'em-seal strong' : seal >= 0.3 ? 'em-seal mid' : 'em-seal weak';
       const sealCls = br === 0 ? 'em-br none' : br <= 2 ? 'em-br some' : 'em-br many';
-      return '<div class="em-stock" title="' + E(x.name + '(' + x.code + ') · ' + (x.industry || '—')) + '">' +
+      const sr = sectorRole.get(x.code) || { role: '', reason: '' };
+      return '<div class="em-stock" title="' + E(x.name + '(' + x.code + ') · ' + (x.industry || '—') + '\n板块地位：' + sr.role + '（' + sr.reason + '）') + '">' +
         '<div class="em-stock-head"><b>' + E(x.name) + '</b><span class="em-code">' + E(x.code) + '</span></div>' +
-        '<div class="em-stock-ind">' + E(x.industry || '—') + '</div>' +
+        '<div class="em-stock-ind">' + E(x.industry || '—') +
+        (sr.role ? '<span class="em-role ' + roleCls(sr.role) + '">' + E(sr.role) + '</span>' : '') + '</div>' +
         '<div class="em-stock-meta"><span>首封 ' + E(x.firstSeal || '—') + '</span>' +
         '<span class="' + cls + '">封 ' + N(seal) + '%</span></div>' +
         '<div class="em-stock-meta"><span class="' + sealCls + '">' + (br === 0 ? '零炸板' : '炸板 ' + br + ' 次') + '</span>' +
@@ -366,7 +389,7 @@
       '<div class="card pad"><h4 style="font-size:12.5px;margin-bottom:6px">连板天梯 <span class="small muted" style="font-weight:400">（东方财富式 · 按板级分层）</span></h4>' +
       '<div class="em-ladder">' + (tiersHtml || '<div class="empty">当日无连板梯队数据</div>') + '</div>' +
       '<div class="note-box">空间板：' + space + '<br>梯队判读：' + E(ov.gap ? '存在断层，按 leader-game 框架属退潮前置信号，需次日 2/3 板补齐确认。' : '梯队连续无断层，情绪延续性优于断层结构。') +
-      '<br>每层按封单比降序、首封时间升序排列；封单比 ≥1% 标红、0.3%~1% 标橙、&lt;0.3% 标灰，炸板次数越多风险越高。数据：东方财富涨停池 + 腾讯证券实时快照。' +
+      '<br>板块地位标注规则（按东财行业分组机械判定，非投资建议）：<b class="up">板块龙头</b>=同行业连板最高且封单最强；<b style="color:var(--warn)">反包核心 / 题材龙 / 封单核心</b>=累计板最高 / 连板最高 / 封单最强但不同时满足龙头条件；板块跟风=连板低于行业最高；独苗=行业仅 1 只涨停。<br>每层按封单比降序、首封时间升序排列；封单比 ≥1% 标红、0.3%~1% 标橙、&lt;0.3% 标灰，炸板次数越多风险越高。数据：东方财富涨停池 + 腾讯证券实时快照。' +
       '</div></div></div></div>' +
 
       '<div class="sec"><div class="sec-head"><h3>二、主线题材与生命周期</h3>' + src('东方财富涨停池行业归属 + 新浪财经板块行情，交易日 ' + (m.poolDate || '—')) + '</div>' +
