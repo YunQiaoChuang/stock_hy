@@ -305,6 +305,13 @@
       name: b + '板', value: ov.ladder[b], label: ov.ladder[b] + ' 家', color: '#d92b2b'
     }));
     const space = ov.spaceBoard.length ? ov.spaceBoard.map(x => E(x.name) + '(' + E(x.code) + ') ' + x.boards + '板 · ' + E(x.industry)).join('；') : '无';
+    // 文字版连板天梯：不依赖图表库，图表加载失败时也能看到梯队和空间板
+    const maxLadder = Math.max(1, ...ladderItems.map(x => x.value));
+    const ladderBars = ladderItems.map(x =>
+      '<div class="home-ladder-row"><span class="hl-b">' + E(x.name) + '</span>' +
+      '<div class="hl-track"><i style="width:' + (x.value / maxLadder * 100).toFixed(1) + '%"></i></div>' +
+      '<b class="hl-n">' + E(x.value) + '</b><span class="hl-u">家</span></div>'
+    ).join('');
 
     const themes = (rv.topThemes || []).map(t =>
       '<div class="info-card theme-card"><h4>' + E(t.name) + ' <span class="mini-tag">' + t.count + ' 只涨停</span></h4>' +
@@ -328,7 +335,9 @@
     $('pane-review').innerHTML =
       '<div class="sec"><div class="sec-head"><h3>一、盘面结构与状态诊断</h3>' + src('新浪财经全市场快照 / 腾讯证券指数 / 东方财富涨停池，时点 ' + TICK(m)) + '</div>' +
       '<div class="grid2"><div class="card pad"><div class="fact-list">' + facts + '</div></div>' +
-      '<div class="card pad"><h4 style="font-size:12.5px;margin-bottom:6px">连板梯队分布（家）</h4><div id="chartLadder" class="chart-sm"></div>' +
+      '<div class="card pad"><h4 style="font-size:12.5px;margin-bottom:6px">连板天梯 / 梯队分布（家）</h4>' +
+      '<div class="home-ladder">' + (ladderBars || '<div class="empty">当日无连板梯队数据</div>') + '</div>' +
+      '<div id="chartLadder" class="chart-sm" style="margin-top:8px"></div>' +
       '<div class="note-box">空间板：' + space + '<br>梯队判读：' + E(ov.gap ? '存在断层，按 leader-game 框架属退潮前置信号，需次日 2/3 板补齐确认。' : '梯队连续无断层，情绪延续性优于断层结构。') + '</div></div></div></div>' +
 
       '<div class="sec"><div class="sec-head"><h3>二、主线题材与生命周期</h3>' + src('东方财富涨停池行业归属 + 新浪财经板块行情，交易日 ' + (m.poolDate || '—')) + '</div>' +
