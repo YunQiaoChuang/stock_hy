@@ -694,6 +694,58 @@ async function getDragon(query, force) {
   return dragonCache.inflight;
 }
 
+/* ─────────── 明日龙头 · 历史回放（逐日重放 + 事后晋级验证） ─────────── */
+const dragonReviewCache = { key: '', value: null, at: 0, inflight: null };
+
+async function getDragonReview(query, force) {
+  let date = String(query.date || '').replace(/\D/g, '');
+  const days = Math.min(15, Math.max(5, Number(query.days) || 15));
+  const key = JSON.stringify({
+    date, days, showAll: query.showAll || '',
+    sort: query.sort || '', sortDir: query.sortDir || '', role: query.role || '',
+    limit: query.limit || '', board: query.board || '', capMin: query.capMin || '',
+    capMax: query.capMax || '', excludeST: query.excludeST || '', keyword: query.keyword || ''
+  });
+  if (!force && dragonReviewCache.value && dragonReviewCache.key === key && Date.now() - dragonReviewCache.at < 300000) return dragonReviewCache.value;
+  if (dragonReviewCache.inflight) return dragonReviewCache.inflight;
+  dragonReviewCache.inflight = (async () => {
+    const t0 = Date.now();
+    try {
+      const history = await ds.getPoolFullHistory(days);
+      if (!date && (history.dates || []).length) date = String(history.dates[0].date);
+      const options = {
+        date,
+        board: query.board, capMin: query.capMin, capMax: query.capMax, keyword: query.keyword,
+        excludeST: query.excludeST, sort: query.sort, sortDir: query.sortDir,
+        limit: query.limit, showAll: query.showAll === undefined ? '1' : query.showAll, role: query.role,
+        days
+      };
+      const g = an.dragonReview(history, options);
+      if (g.error) {
+        return { error: g.error, availableDates: g.availableDates || [], meta: { ...beijingNow(), port: ACTIVE_PORT } };
+      }
+      const meta = {
+        ...beijingNow(),
+        generatedAt: new Date().toISOString(),
+        poolDate: g.review.date,
+        nextDate: g.review.nextDate,
+        historyDates: history.dates || [],
+        historyNote: history.note || '',
+        quoteTick: null, quotesOk: 0, prevCodesCount: 0,
+        conceptBoardCount: 0,
+        elapsedMs: Date.now() - t0,
+        isReview: true,
+        dataSourceNote: g.metaNote + '；历史回放不接实时快照 / 指数 / 概念映射，「昨日连板今日溢价」按中性计，与当日实时版温度不直接可比。',
+        disclaimer: DISCLAIMER
+      };
+      const value = { meta, ...g };
+      dragonReviewCache.value = value; dragonReviewCache.key = key; dragonReviewCache.at = Date.now();
+      return value;
+    } finally { dragonReviewCache.inflight = null; }
+  })();
+  return dragonReviewCache.inflight;
+}
+
 /* ─────────── 消息面实时监控（公告 + 7×24 快讯，独立短缓存与新增标记） ─────────── */
 const newsCache = { value: null, key: '', at: 0, inflight: null };
 const newsSeen = new Map();     // 条目 ID → 服务端首次发现时间（ms），用于「新增」标记
@@ -958,6 +1010,7 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === '/api/pullback') return sendJson(res, await getPullback(q, q.force === '1'));
     if (u.pathname === '/api/backtest') return sendJson(res, await getBacktest(q, q.force === '1'));
     if (u.pathname === '/api/dragon') return sendJson(res, await getDragon(q, q.force === '1'));
+    if (u.pathname === '/api/dragon/review') return sendJson(res, await getDragonReview(q, q.force === '1'));
     if (u.pathname === '/api/news') return sendJson(res, await getNews(q, q.force === '1'));
     if (u.pathname === '/api/enlightenment') return sendJson(res, await getEnlightenment(q, q.force === '1'));
     if (u.pathname === '/api/health') return sendJson(res, { ...beijingNow(), port: ACTIVE_PORT, health: ds.getHealth(), ai: aiStatus(), disclaimer: DISCLAIMER });

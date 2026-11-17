@@ -14,6 +14,7 @@
   const tag = (t, cls) => '<span class="tag ' + (cls || '') + '">' + E(t) + '</span>';
   const src = s => '<span class="src">来源：' + E(s) + '</span>';
   const TICK = m => m.quoteTick || m.universeTick || (m.now ? m.now.slice(11, 16) : '—');
+  const fmtDate = v => { const s = String(v || '').replace(/\D/g, ''); return s.length === 8 ? s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8) : (v || '—'); };
 
   /* 「连不上本地服务」与「上游数据源不可用」是两类完全不同的故障，提示不能混为一谈 */
   const SERVICE_HINT = '本地服务未响应：请确认 A股实时复盘系统已启动（双击项目目录 start.bat，或在项目目录运行 node server.js）；默认端口 8899，被占用时会自动顺延，请以控制台输出的「本机访问」地址为准。';
@@ -33,6 +34,8 @@
     btDate: 'all', btWindow: 5, btMethodOpen: false,
     dg: null, dgLoading: false, dgError: null, dgAt: 0, dgSelected: null, dgFilters: '',
     dgMethodOpen: false, dgValidationOpen: false,
+    dgHist: null, dgHistDate: null, dgHistOpen: false, dgHistLoading: false, dgHistError: null,
+    dgHistSelected: null, dgHistMethodOpen: false,
     dgOpts: { days: 12, showAll: 0, sort: 'score', sortDir: 'desc', role: '全部', limit: 60 },
     dgOfflineTimer: null,
     news: null, newsLoading: false, newsError: null, newsAt: 0, newsSince: null,
@@ -236,8 +239,12 @@
     ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'enlighten'].forEach(k => $('pane-' + k).classList.toggle('active', k === t));
     if (t === 'pullback' && !S.pull && !S.pullLoading) loadPullback(false);
     if (t === 'dragon') {
-      if (!S.dg && !S.dgLoading) loadDragon(false);
-      setTimeout(startNewsMonitor, 0);
+      const histParam = new URLSearchParams(location.search).get('hist');
+      if (histParam && /^\d{8}$/.test(histParam)) {
+        S.dgHistOpen = true;
+        loadDragonHistory(histParam, false);
+      } else if (!S.dg && !S.dgLoading) loadDragon(false);
+      if (!S.dgHistOpen) setTimeout(startNewsMonitor, 0);
     } else stopNewsMonitor();
     if (t === 'enlighten' && !S.en && !S.enLoading) loadEnlightenment(false);
     setTimeout(() => { Object.values(S.charts || {}).forEach(c => { try { c.resize(); } catch (e) { } }); }, 60);
@@ -1570,8 +1577,10 @@
       tag('名称题材 ' + (su.nameThemeCount || 0), 'warn') +
       tag('昨日连板溢价 ' + (s.prevPremium === null ? '—' : (s.prevPremium > 0 ? '+' : '') + s.prevPremium + '%'), s.prevPremium < 0 ? 'green' : 'red') +
       tag('候选 ' + su.shown, 'purple') +
-      tag('严重异动预警 ' + ((rs.triggered || 0) + (rs.imminent || 0)), 'red') +
-      tag('交易风险高 ' + (rs.tradeHigh || 0), 'warn') + '</div></div>';
+      (j.meta && j.meta.isReview
+        ? tag('风险标记仅实时版提供', '')
+        : tag('严重异动预警 ' + ((rs.triggered || 0) + (rs.imminent || 0)), 'red') +
+          tag('交易风险高 ' + (rs.tradeHigh || 0), 'warn')) + '</div></div>';
   }
 
   function dgSource(j) {
@@ -1600,6 +1609,7 @@
         .map(p => '<option value="' + p[0] + '"' + (o.sort === p[0] ? ' selected' : '') + '>' + E(p[1]) + '</option>').join('') +
       '</select></label> ' +
       '<button class="btn" id="dgMethod">' + (S.dgMethodOpen ? '收起' : '查看') + '打法口径</button>' +
+      '<button class="btn btn-accent" id="dgHistOpen">历史回放 · 看过去某日的分析</button>' +
       '<span class="small muted">全局筛选（市值 / 板块 / ST / 关键字）同样作用于本模块</span></div></div>';
   }
 
@@ -1854,8 +1864,173 @@
     box.innerHTML = dgDetailHead(x) + dgRiskCard(x) + dgMeters(x) + dgScriptCard(x) + dgScoreCard(x) + nwDetailCard(x);
   }
 
+  /* ─────────── 明日龙头 · 历史回放（逐日重放 + 事后晋级验证） ─────────── */
+  async function fetchDragonHistoryJson(q) {
+    let lastErr;
+    for (let i = 0; i < 3; i++) {
+      try {
+        const r = await fetch('/api/dragon/review?' + q.toString(), { cache: 'no-store' });
+        let j;
+        try { j = await r.json(); }
+        catch (_) { throw new Error('服务返回了非 JSON 响应（HTTP ' + r.status + '）'); }
+        if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+        return j;
+      } catch (e) {
+        lastErr = e;
+        if (!isConnError(e) || i === 2) break;
+        await new Promise(res => setTimeout(res, 1000 + i * 1200));
+      }
+    }
+    throw lastErr;
+  }
+
+  async function loadDragonHistory(date, force) {
+    if (S.dgHistLoading) return;
+    S.dgHistLoading = true;
+    S.dgHistError = null;
+    $('pane-dragon').innerHTML = '<div class="card empty">正在回放 ' + E(date || '历史交易日') + ' 的涨停池分析与次日兑现结果…</div>';
+    const q = new URLSearchParams();
+    if (date) q.set('date', date);
+    q.set('days', '15');
+    q.set('showAll', '1');
+    q.set('limit', '60');
+    if (force) q.set('force', '1');
+    try {
+      const j = await fetchDragonHistoryJson(q);
+      S.dgHist = j;
+      S.dgHistDate = j.meta && j.meta.poolDate;
+      const dates = (j.review && j.review.availableDates) || [];
+      if (!dates.some(d => String(d.date) === String(S.dgHistDate))) S.dgHistSelected = dates.length ? String(dates[0].date) : null;
+      else S.dgHistSelected = String(S.dgHistDate);
+      renderDragonHistory();
+    } catch (e) {
+      S.dgHistError = e.message;
+      const offline = isConnError(e);
+      $('pane-dragon').innerHTML = '<div class="card empty"><b>历史回放加载失败：' + E(e.message) + '</b><br>' +
+        '<span class="small muted">' + (offline ? E(SERVICE_HINT) : '服务端或上游数据源异常；系统不会用推测数据填充，可稍后重试。') + '</span></div>' +
+        '<div class="card pad" style="margin-top:12px"><button class="btn btn-primary" id="dhRetry">重试</button> ' +
+        '<button class="btn" id="dhBack">返回实时分析</button></div>';
+      $('dhRetry').onclick = () => loadDragonHistory(S.dgHistDate, true);
+      $('dhBack').onclick = () => { S.dgHistOpen = false; renderDragon(); };
+      if (offline) watchService('dragon');
+    } finally { S.dgHistLoading = false; }
+  }
+
+  function dgHistBar(j) {
+    const r = j.review || {}, dates = r.availableDates || [], m = j.meta || {};
+    const opts = dates.map(d => {
+      const sel = String(d.date) === String(S.dgHistSelected) ? ' selected' : '';
+      return '<option value="' + E(d.date) + '"' + sel + '>' + E(fmtDate(d.date)) + '（涨停 ' + E(d.zt) + ' / 炸板 ' + E(d.zb) + '）</option>';
+    }).join('');
+    const hasNext = r.summary && r.summary.hasNext;
+    return '<div class="card pad dh-bar"><div class="dh-bar-top"><div><b>历史回放</b>' +
+      '<span class="small muted"> · 用与实时版相同的规则，重放「站在那天收盘时」看到的明日龙头分析</span></div>' +
+      '<button class="btn" id="dhBackTop">返回实时分析</button></div>' +
+      '<div class="dh-bar-ctl"><label class="small muted">选择交易日 <select class="sel" id="dhDate">' + opts + '</select></label>' +
+      '<button class="btn" id="dhPrev" title="更早一个交易日">← 更早</button>' +
+      '<button class="btn" id="dhNext" title="更近一个交易日" ' + (dates.length && String(S.dgHistSelected) === String(dates[0].date) ? 'disabled' : '') + '>更近 →</button>' +
+      '<button class="btn btn-primary" id="dhGo">回放该日</button>' +
+      '<span class="small muted">回放日数据截至 ' + E(fmtDate(m.poolDate)) + ' · 次日兑现' + (hasNext ? '取 ' + E(fmtDate(r.nextDate)) : '：尚无后续数据') + '</span></div>' +
+      '<div class="dh-bar-note">' + E('无未来函数：当日分析只用该日及之前数据；实时溢价快照 / 指数 / 概念映射在历史回放中不可用，「昨日连板今日溢价」按中性计，故回放温度与当日实时版不直接可比。次日兑现为事后验证，不改写当日评分。') + '</div>' +
+      '</div>';
+  }
+
+  function dgHistOutcomeCard(j) {
+    const r = j.review || {}, su = r.summary || {}, rows = r.outcome || [];
+    const pct = su.promoteRate === null ? '—' : su.promoteRate + '%';
+    const surv = su.surviveRate === null ? '—' : su.surviveRate + '%';
+    const head = '<div class="card pad dg-card"><div class="dg-card-head"><h4>次日兑现 · 事后验证</h4>' +
+      src(r.nextDate ? '回放日 ' + fmtDate(r.date) + ' 的龙头 → 下一交易日 ' + fmtDate(r.nextDate) + ' 真实涨停 / 炸板池' : '回放日为最新交易日，暂无下一交易日数据') + '</div>';
+    if (!su.hasNext) {
+      return head + '<div class="empty">' + E(fmtDate(r.date) + ' 是当前可回溯的最新交易日，尚无下一交易日的真实池数据，无法计算次日晋级。稍后数据更新后再回放即可看到兑现结果。') + '</div></div>';
+    }
+    const kpis = '<div class="dg-kpi-grid">' +
+      '<div class="dg-kpi"><span>当日龙头候选</span><b>' + E(su.candidates) + '</b><em>回放选出的观察清单</em></div>' +
+      '<div class="dg-kpi"><span>次日晋级</span><b>' + E(su.promoted) + '</b><em>连板数继续增加</em></div>' +
+      '<div class="dg-kpi"><span>晋级率</span><b>' + E(pct) + '</b><em>晋级 / 候选，非收益率</em></div>' +
+      '<div class="dg-kpi"><span>次日仍涨停</span><b>' + E(surv) + '</b><em>含晋级 + 连板持平</em></div></div>';
+    const byDtype = (su.byDtype || []).map(b =>
+      '<tr><td>' + E(b.dtype) + '</td><td>' + E(b.n) + '</td><td>' + E(b.promoted) + '</td><td>' + E(b.rate === null ? '—' : b.rate + '%') + '</td></tr>').join('');
+    const tbl = rows.length
+      ? '<div class="tbl-wrap"><table><thead><tr><th>标的</th><th>地位</th><th>分歧类型</th><th>回放日连板</th><th>次日连板</th><th>结果</th><th>观察优先级</th></tr></thead><tbody>' +
+        rows.map(o => '<tr><td><b>' + E(o.name) + '</b><div class="small muted">' + E(o.code) + (o.theme ? ' · ' + E(o.theme) : '') + '</div></td>' +
+          '<td>' + E(o.role) + '</td><td>' + E(o.dtype) + '</td><td>' + E(o.boards) + ' 板</td><td>' + (o.nextBoards === null ? '—' : E(o.nextBoards) + ' 板') + '</td>' +
+          '<td>' + tag(o.resultLabel, o.result === 'promoted' ? 'red' : o.result === 'broken' ? 'green' : o.result === 'pending' ? '' : 'blue') + '</td>' +
+          '<td>' + E(o.score) + '</td></tr>').join('') + '</tbody></table></div>'
+      : '<div class="empty">当日回放没有可展示的龙头候选。</div>';
+    return head + kpis +
+      '<div class="dh-dtype"><div class="dg-h5">按分歧类型看晋级（样本小，仅作对照）</div>' +
+      '<div class="tbl-wrap"><table><thead><tr><th>分歧类型</th><th>候选</th><th>晋级</th><th>晋级率</th></tr></thead><tbody>' +
+      (byDtype || '<tr><td colspan="4" class="small muted">无样本</td></tr>') + '</tbody></table></div></div>' + tbl +
+      '<div class="note-box">晋级率只衡量「回放日龙头在次日是否继续涨停且连板数增加」，<b>不等于收益率或可交易胜率</b>：一字 / 秒板天然更易连板但往往买不进。此表是事后验证，回放日的评分、情绪与候选均未使用次日数据，不可反推「该提前知道」。样本跨日重复、不独立，历史池约 15 日、样本量小。</div></div>';
+  }
+
+  function renderDragonHistory() {
+    const j = S.dgHist; if (!j) return;
+    const bar = dgHistBar(j);
+    const focus = '<div class="card pad dg-card"><div class="dg-card-head"><h4>那天的「明日 3 个核心变量」</h4>' +
+      '<span class="small muted">回放日收盘时按当时数据生成，不含次日结果</span></div>' +
+      (j.focus || []).map((f, i) => '<div class="dg-focus"><b>' + (i + 1) + '</b><span>' + E(f) + '</span></div>').join('') + '</div>';
+    const list = j.list || [];
+    const body = list.length
+      ? '<div class="dg-layout"><div class="dg-list" id="dhList">' + list.map(x =>
+        '<div class="dg-item' + (x.code === S.dgHistSelected ? ' active' : '') + '" data-code="' + E(x.code) + '">' +
+        '<div class="dg-item-top"><b>' + E(x.name) + '</b><span class="code muted">' + E(x.code) + '</span>' +
+        '<span class="tag ' + dgDtypeCls(x.dtype) + '">' + E(x.dtype) + '</span><span class="dg-score">' + E(x.score) + '</span></div>' +
+        '<div class="dg-item-mid"><span>' + E(x.boardLabel || (x.boards + ' 板')) + '</span>' +
+        '<span class="tag ' + (x.roleRank === 1 ? 'red' : 'blue') + '">' + E(x.role) + '</span><span class="muted">' + E(x.industry) + '</span></div>' +
+        '<div class="dg-mini-meters"><span>一致 ' + E(x.consensus) + '</span>' + dgBar(x.consensus, 'blue') +
+        '<span>分歧 ' + E(x.divergence) + '</span>' + dgBar(x.divergence, 'red') + '</div>' +
+        '<div class="dg-item-bot">' + E(x.script && x.script.title || '') + '</div></div>').join('') + '</div>' +
+        '<div class="dg-detail" id="dhDetail"></div></div>'
+      : '<div class="card empty">该交易日回放没有符合条件的龙头候选（可切到「全池对照」口径的回放或换一天）。</div>';
+    const method = '<div class="card pad dg-method" id="dhMethodBox" style="display:' + (S.dgHistMethodOpen ? '' : 'none') + '">' +
+      '<h4 style="font-size:13px;margin-bottom:9px">' + E((j.methodology || {}).title || '回放口径') + '</h4>' +
+      ((j.methodology || {}).rules || []).map(r => '<div class="pb-step"><b>' + E(r.name) + '</b><span>' + E(r.text) + '</span></div>').join('') +
+      '<div class="note-box">' + E((j.methodology || {}).note || '') + '</div></div>';
+    const disc = '<div class="disclaimer" style="margin-top:14px"><strong>免责声明</strong>：历史回放基于公开涨停池与量化规则，仅供研究复盘，不构成投资建议。过往表现不预示未来收益。</div>';
+    $('pane-dragon').innerHTML = bar + dgHead(j) +
+      '<div class="dh-method-toggle"><button class="btn" id="dhMethod">查看回放口径与边界</button></div>' + method +
+      dgSentimentCard(j) + '<div class="dg-grid2">' + dgLadderCard(j) + dgThemesCard(j) + '</div>' +
+      dgThemeUnderstandingCard(j) + focus + dgValidationCard(j) +
+      dgHistOutcomeCard(j) + body + disc;
+
+    const setDate = d => { if (d) { S.dgHistSelected = String(d); loadDragonHistory(S.dgHistSelected, false); } };
+    $('dhBackTop').onclick = () => { S.dgHistOpen = false; renderDragon(); };
+    $('dhGo').onclick = () => setDate(($('dhDate') && $('dhDate').value));
+    const dates = (j.review && j.review.availableDates) || [];
+    const ci = dates.findIndex(d => String(d.date) === String(S.dgHistSelected));
+    $('dhPrev').onclick = () => { if (ci >= 0 && ci < dates.length - 1) setDate(dates[ci + 1].date); };
+    $('dhNext').onclick = () => { if (ci > 0) setDate(dates[ci - 1].date); };
+    $('dhMethod').onclick = () => {
+      S.dgHistMethodOpen = !S.dgHistMethodOpen;
+      $('dhMethodBox').style.display = S.dgHistMethodOpen ? '' : 'none';
+      $('dhMethod').textContent = S.dgHistMethodOpen ? '收起回放口径' : '查看回放口径与边界';
+    };
+    const renderHistDetail = () => {
+      const box = $('dhDetail'); if (!box) return;
+      const x = list.find(a => a.code === S.dgHistSelected);
+      if (!x) { box.innerHTML = '<div class="card empty">选择左侧标的查看当日的地位依据与明日剧本</div>'; return; }
+      const ot = (j.review.outcome || []).find(o => o.code === x.code);
+      const outCard = ot ? '<div class="card pad dg-card"><div class="dg-card-head"><h4>该股次日兑现（事后验证）</h4></div>' +
+        '<div class="dg-kv-grid">' + dgKv('回放日连板', E(ot.boards) + ' 板') + dgKv('次日连板', ot.nextBoards === null ? '—' : E(ot.nextBoards) + ' 板') +
+        dgKv('次日结果', E(ot.resultLabel)) + dgKv('观察优先级', E(ot.score)) + '</div>' +
+        '<div class="note-box">此项为事后验证，回放日的评分与剧本未使用次日数据。</div></div>' : '';
+      box.innerHTML = dgDetailHead(x) + dgMeters(x) + dgScriptCard(x) + dgScoreCard(x) + outCard;
+    };
+    $('pane-dragon').querySelectorAll('#dhList .dg-item').forEach(el => {
+      el.onclick = () => {
+        S.dgHistSelected = el.dataset.code;
+        $('pane-dragon').querySelectorAll('#dhList .dg-item').forEach(n => n.classList.toggle('active', n === el));
+        renderHistDetail();
+      };
+    });
+    renderHistDetail();
+  }
+
   function renderDragon() {
     const j = S.dg; if (!j) return;
+    if (S.dgHistOpen) { renderDragonHistory(); return; }
     const s = j.sentiment, list = j.list || [];
     const focus = '<div class="card pad dg-card"><div class="dg-card-head"><h4>明日 3 个核心变量</h4>' +
       '<span class="small muted">由今日真实梯队 / 情绪 / 题材数据生成，不是预测</span></div>' +
@@ -1884,6 +2059,11 @@
     $('dgRole').onchange = e => { S.dgOpts.role = e.target.value; loadDragon(true); };
     $('dgDays').onchange = e => { S.dgOpts.days = Number(e.target.value); loadDragon(true); };
     $('dgSort').onchange = e => { S.dgOpts.sort = e.target.value; loadDragon(true); };
+    $('dgHistOpen').onclick = () => {
+      S.dgHistOpen = true;
+      const d = (j.meta && j.meta.historyDates || []).length ? j.meta.historyDates[0].date : null;
+      loadDragonHistory(d, false);
+    };
     $('dgMethod').onclick = () => {
       S.dgMethodOpen = !S.dgMethodOpen;
       $('dgMethodBox').style.display = S.dgMethodOpen ? '' : 'none';
