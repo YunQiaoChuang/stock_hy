@@ -310,17 +310,36 @@
     const ov = d.overview, rv = d.review, m = d.meta;
     const facts = rv.facts.map(f => '<div class="fact"><div class="fl">' + E(f.label) + '</div><div class="fv">' + E(f.value) + '<div class="fn">' + E(f.note) + '</div></div></div>').join('');
 
+    // 东方财富式「连板天梯」：按板级从高到低分层，每层列出该板个股卡片
     const ladderItems = Object.keys(ov.ladder).sort((a, b) => b - a).map(b => ({
       name: b + '板', value: ov.ladder[b], label: ov.ladder[b] + ' 家', color: '#d92b2b'
     }));
     const space = ov.spaceBoard.length ? ov.spaceBoard.map(x => E(x.name) + '(' + E(x.code) + ') ' + x.boards + '板 · ' + E(x.industry)).join('；') : '无';
-    // 文字版连板天梯：不依赖图表库，图表加载失败时也能看到梯队和空间板
-    const maxLadder = Math.max(1, ...ladderItems.map(x => x.value));
-    const ladderBars = ladderItems.map(x =>
-      '<div class="home-ladder-row"><span class="hl-b">' + E(x.name) + '</span>' +
-      '<div class="hl-track"><i style="width:' + (x.value / maxLadder * 100).toFixed(1) + '%"></i></div>' +
-      '<b class="hl-n">' + E(x.value) + '</b><span class="hl-u">家</span></div>'
-    ).join('');
+    const ztAll = (d.opportunities && d.opportunities.zt) || [];
+    const byBoard = new Map();
+    ztAll.forEach(x => { const b = Number(x.boards) || 1; if (!byBoard.has(b)) byBoard.set(b, []); byBoard.get(b).push(x); });
+    const boardOfCell = b => b >= 5 ? 'em-tier-5' : b === 4 ? 'em-tier-4' : b === 3 ? 'em-tier-3' : b === 2 ? 'em-tier-2' : 'em-tier-1';
+    const stockCell = x => {
+      const seal = Number(x.sealFundRatio) || 0, br = Number(x.brokenCount) || 0;
+      const cls = seal >= 1 ? 'em-seal strong' : seal >= 0.3 ? 'em-seal mid' : 'em-seal weak';
+      const sealCls = br === 0 ? 'em-br none' : br <= 2 ? 'em-br some' : 'em-br many';
+      return '<div class="em-stock" title="' + E(x.name + '(' + x.code + ') · ' + (x.industry || '—')) + '">' +
+        '<div class="em-stock-head"><b>' + E(x.name) + '</b><span class="em-code">' + E(x.code) + '</span></div>' +
+        '<div class="em-stock-ind">' + E(x.industry || '—') + '</div>' +
+        '<div class="em-stock-meta"><span>首封 ' + E(x.firstSeal || '—') + '</span>' +
+        '<span class="' + cls + '">封 ' + N(seal) + '%</span></div>' +
+        '<div class="em-stock-meta"><span class="' + sealCls + '">' + (br === 0 ? '零炸板' : '炸板 ' + br + ' 次') + '</span>' +
+        '<span>换手 ' + N(x.turnover) + '%</span></div></div>';
+    };
+    const tiersHtml = [...byBoard.keys()].sort((a, b) => b - a).map(b => {
+      const list = byBoard.get(b).slice().sort((a, c) =>
+        (Number(c.sealFundRatio) || 0) - (Number(a.sealFundRatio) || 0) ||
+        String(a.firstSeal || '').localeCompare(String(c.firstSeal || '')));
+      return '<div class="em-tier ' + boardOfCell(b) + '"><div class="em-tier-head">' +
+        '<span class="em-tier-badge">' + b + '板</span><span class="em-tier-count">' + list.length + ' 家</span>' +
+        (b === Number(ov.maxBoard) && b >= 2 ? '<span class="em-tier-mark">空间板</span>' : '') +
+        '</div><div class="em-stocks">' + list.map(stockCell).join('') + '</div></div>';
+    }).join('');
 
     const themes = (rv.topThemes || []).map(t =>
       '<div class="info-card theme-card"><h4>' + E(t.name) + ' <span class="mini-tag">' + t.count + ' 只涨停</span></h4>' +
@@ -344,10 +363,11 @@
     $('pane-review').innerHTML =
       '<div class="sec"><div class="sec-head"><h3>一、盘面结构与状态诊断</h3>' + src('新浪财经全市场快照 / 腾讯证券指数 / 东方财富涨停池，时点 ' + TICK(m)) + '</div>' +
       '<div class="grid2"><div class="card pad"><div class="fact-list">' + facts + '</div></div>' +
-      '<div class="card pad"><h4 style="font-size:12.5px;margin-bottom:6px">连板天梯 / 梯队分布（家）</h4>' +
-      '<div class="home-ladder">' + (ladderBars || '<div class="empty">当日无连板梯队数据</div>') + '</div>' +
-      '<div id="chartLadder" class="chart-sm" style="margin-top:8px"></div>' +
-      '<div class="note-box">空间板：' + space + '<br>梯队判读：' + E(ov.gap ? '存在断层，按 leader-game 框架属退潮前置信号，需次日 2/3 板补齐确认。' : '梯队连续无断层，情绪延续性优于断层结构。') + '</div></div></div></div>' +
+      '<div class="card pad"><h4 style="font-size:12.5px;margin-bottom:6px">连板天梯 <span class="small muted" style="font-weight:400">（东方财富式 · 按板级分层）</span></h4>' +
+      '<div class="em-ladder">' + (tiersHtml || '<div class="empty">当日无连板梯队数据</div>') + '</div>' +
+      '<div class="note-box">空间板：' + space + '<br>梯队判读：' + E(ov.gap ? '存在断层，按 leader-game 框架属退潮前置信号，需次日 2/3 板补齐确认。' : '梯队连续无断层，情绪延续性优于断层结构。') +
+      '<br>每层按封单比降序、首封时间升序排列；封单比 ≥1% 标红、0.3%~1% 标橙、&lt;0.3% 标灰，炸板次数越多风险越高。数据：东方财富涨停池 + 腾讯证券实时快照。' +
+      '</div></div></div></div>' +
 
       '<div class="sec"><div class="sec-head"><h3>二、主线题材与生命周期</h3>' + src('东方财富涨停池行业归属 + 新浪财经板块行情，交易日 ' + (m.poolDate || '—')) + '</div>' +
       '<div class="grid2">' + (themes || '<div class="empty">当前无涨停题材分组数据</div>') + '</div>' +
