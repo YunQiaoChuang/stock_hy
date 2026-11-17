@@ -1935,34 +1935,63 @@
       '</div>';
   }
 
+  function dhPct(v, digits) {
+    if (v === null || v === undefined || !Number.isFinite(v)) return '<span class="muted">—</span>';
+    const n = Number(v), d = digits === undefined ? 2 : digits;
+    return '<b class="' + (n > 0 ? 'up' : n < 0 ? 'down' : 'flat') + '">' + (n > 0 ? '+' : '') + n.toFixed(d) + '%</b>';
+  }
+  function dhPctSmall(v) {
+    if (v === null || v === undefined || !Number.isFinite(v)) return '—';
+    const n = Number(v);
+    return '<span class="' + (n > 0 ? 'up' : n < 0 ? 'down' : 'flat') + '">' + (n > 0 ? '+' : '') + n.toFixed(1) + '%</span>';
+  }
+
   function dgHistOutcomeCard(j) {
-    const r = j.review || {}, su = r.summary || {}, rows = r.outcome || [];
+    const r = j.review || {}, su = r.summary || {}, rows = r.outcome || [], pf = su.perf || {};
     const pct = su.promoteRate === null ? '—' : su.promoteRate + '%';
     const surv = su.surviveRate === null ? '—' : su.surviveRate + '%';
+    const ksrc = (pf.sources || []).join(' / ') || '日K不可用';
+    const kadj = (pf.adjustedModes || []).length === 0 ? '口径未知'
+      : (pf.adjustedModes || []).every(Boolean) ? '前复权'
+        : (pf.adjustedModes || []).some(Boolean) ? '复权口径混用' : '不复权';
     const head = '<div class="card pad dg-card"><div class="dg-card-head"><h4>次日兑现 · 事后验证</h4>' +
-      src(r.nextDate ? '回放日 ' + fmtDate(r.date) + ' 的龙头 → 下一交易日 ' + fmtDate(r.nextDate) + ' 真实涨停 / 炸板池' : '回放日为最新交易日，暂无下一交易日数据') + '</div>';
+      src(r.nextDate ? '回放日 ' + fmtDate(r.date) + ' 的龙头 → 下一交易日 ' + fmtDate(r.nextDate) + ' 真实涨停 / 炸板池；次日涨跌幅取 ' + ksrc + '（' + kadj + '），可用 ' + E(pf.available || 0) + '/' + E(pf.total || 0) : '回放日为最新交易日，暂无下一交易日数据') + '</div>';
     if (!su.hasNext) {
-      return head + '<div class="empty">' + E(fmtDate(r.date) + ' 是当前可回溯的最新交易日，尚无下一交易日的真实池数据，无法计算次日晋级。稍后数据更新后再回放即可看到兑现结果。') + '</div></div>';
+      return head + '<div class="empty">' + E(fmtDate(r.date) + ' 是当前可回溯的最新交易日，尚无下一交易日的真实池数据，无法计算次日晋级与涨跌幅。稍后数据更新后再回放即可看到兑现结果。') + '</div></div>';
     }
     const kpis = '<div class="dg-kpi-grid">' +
       '<div class="dg-kpi"><span>当日龙头候选</span><b>' + E(su.candidates) + '</b><em>回放选出的观察清单</em></div>' +
       '<div class="dg-kpi"><span>次日晋级</span><b>' + E(su.promoted) + '</b><em>连板数继续增加</em></div>' +
       '<div class="dg-kpi"><span>晋级率</span><b>' + E(pct) + '</b><em>晋级 / 候选，非收益率</em></div>' +
-      '<div class="dg-kpi"><span>次日仍涨停</span><b>' + E(surv) + '</b><em>含晋级 + 连板持平</em></div></div>';
+      '<div class="dg-kpi"><span>次日仍涨停</span><b>' + E(surv) + '</b><em>含晋级 + 连板持平</em></div>' +
+      '<div class="dg-kpi"><span>次日平均涨跌</span><b>' + dhPct(pf.avgClosePct) + '</b><em>收盘 / 回放日收盘 − 1</em></div>' +
+      '<div class="dg-kpi"><span>收盘上涨占比</span><b>' + E(pf.winRate === null ? '—' : pf.winRate + '%') + '</b><em>收盘涨幅 &gt; 0</em></div>' +
+      '<div class="dg-kpi"><span>平均最高涨幅</span><b>' + dhPct(pf.avgHighPct) + '</b><em>盘中最大上冲</em></div>' +
+      '<div class="dg-kpi"><span>平均最低涨幅</span><b>' + dhPct(pf.avgLowPct) + '</b><em>盘中最大回撤</em></div></div>';
     const byDtype = (su.byDtype || []).map(b =>
-      '<tr><td>' + E(b.dtype) + '</td><td>' + E(b.n) + '</td><td>' + E(b.promoted) + '</td><td>' + E(b.rate === null ? '—' : b.rate + '%') + '</td></tr>').join('');
+      '<tr><td>' + E(b.dtype) + '</td><td>' + E(b.n) + '</td><td>' + E(b.promoted) + '</td><td>' + E(b.rate === null ? '—' : b.rate + '%') + '</td>' +
+      '<td>' + dhPct(b.avgClosePct) + '</td><td>' + E(b.winRate === null ? '—' : b.winRate + '%') + '</td></tr>').join('');
     const tbl = rows.length
-      ? '<div class="tbl-wrap"><table><thead><tr><th>标的</th><th>地位</th><th>分歧类型</th><th>回放日连板</th><th>次日连板</th><th>结果</th><th>观察优先级</th></tr></thead><tbody>' +
-        rows.map(o => '<tr><td><b>' + E(o.name) + '</b><div class="small muted">' + E(o.code) + (o.theme ? ' · ' + E(o.theme) : '') + '</div></td>' +
-          '<td>' + E(o.role) + '</td><td>' + E(o.dtype) + '</td><td>' + E(o.boards) + ' 板</td><td>' + (o.nextBoards === null ? '—' : E(o.nextBoards) + ' 板') + '</td>' +
-          '<td>' + tag(o.resultLabel, o.result === 'promoted' ? 'red' : o.result === 'broken' ? 'green' : o.result === 'pending' ? '' : 'blue') + '</td>' +
-          '<td>' + E(o.score) + '</td></tr>').join('') + '</tbody></table></div>'
+      ? '<div class="tbl-wrap"><table><thead><tr><th>标的</th><th>地位</th><th>分歧类型</th><th>回放日连板</th><th>次日连板</th><th>结果</th><th>次日涨跌幅（收盘）</th><th>观察优先级</th></tr></thead><tbody>' +
+        rows.map(o => {
+          const p = o.perf || {};
+          const pc = p.available
+            ? dhPct(p.closePct) + '<div class="small muted">开 ' + dhPctSmall(p.openPct) + ' / 高 ' + dhPctSmall(p.highPct) + ' / 低 ' + dhPctSmall(p.lowPct) + '</div>'
+            : '<span class="small muted">' + E(p.reason || '无数据') + '</span>';
+          return '<tr><td><b>' + E(o.name) + '</b><div class="small muted">' + E(o.code) + (o.theme ? ' · ' + E(o.theme) : '') + '</div></td>' +
+            '<td>' + E(o.role) + '</td><td>' + E(o.dtype) + '</td><td>' + E(o.boards) + ' 板</td><td>' + (o.nextBoards === null ? '—' : E(o.nextBoards) + ' 板') + '</td>' +
+            '<td>' + tag(o.resultLabel, o.result === 'promoted' ? 'red' : o.result === 'broken' ? 'green' : o.result === 'pending' ? '' : 'blue') + '</td>' +
+            '<td>' + pc + '</td><td>' + E(o.score) + '</td></tr>';
+        }).join('') + '</tbody></table></div>'
       : '<div class="empty">当日回放没有可展示的龙头候选。</div>';
+    const extremes = (pf.best || pf.worst)
+      ? '<div class="small muted" style="margin-top:8px">涨幅最高：<b>' + E((pf.best || {}).name || '—') + '</b> ' + dhPct((pf.best || {}).closePct) +
+        '　跌幅最大：<b>' + E((pf.worst || {}).name || '—') + '</b> ' + dhPct((pf.worst || {}).closePct) + '</div>' : '';
     return head + kpis +
-      '<div class="dh-dtype"><div class="dg-h5">按分歧类型看晋级（样本小，仅作对照）</div>' +
-      '<div class="tbl-wrap"><table><thead><tr><th>分歧类型</th><th>候选</th><th>晋级</th><th>晋级率</th></tr></thead><tbody>' +
-      (byDtype || '<tr><td colspan="4" class="small muted">无样本</td></tr>') + '</tbody></table></div></div>' + tbl +
-      '<div class="note-box">晋级率只衡量「回放日龙头在次日是否继续涨停且连板数增加」，<b>不等于收益率或可交易胜率</b>：一字 / 秒板天然更易连板但往往买不进。此表是事后验证，回放日的评分、情绪与候选均未使用次日数据，不可反推「该提前知道」。样本跨日重复、不独立，历史池约 15 日、样本量小。</div></div>';
+      '<div class="dh-dtype"><div class="dg-h5">按分歧类型看晋级与次日涨跌（样本小，仅作对照）</div>' +
+      '<div class="tbl-wrap"><table><thead><tr><th>分歧类型</th><th>候选</th><th>晋级</th><th>晋级率</th><th>平均次日涨跌</th><th>上涨占比</th></tr></thead><tbody>' +
+      (byDtype || '<tr><td colspan="6" class="small muted">无样本</td></tr>') + '</tbody></table></div></div>' + tbl + extremes +
+      '<div class="note-box">晋级率只衡量「回放日龙头在次日是否继续涨停且连板数增加」，<b>不等于收益率或可交易胜率</b>：一字 / 秒板天然更易连板但往往买不进。涨跌幅以<b>回放日收盘价</b>为基准，收盘 / 开盘 / 最高 / 最低分别计算，来自真实日K（' + E(ksrc) + ' · ' + E(kadj) + '）；它同样<b>不等于可交易收益</b>，因为买入价、滑点与能否成交都未计入。此表是事后验证，回放日的评分、情绪与候选均未使用次日数据，不可反推「该提前知道」。样本跨日重复、不独立，历史池约 15 日、样本量小。</div></div>';
   }
 
   function renderDragonHistory() {
@@ -1972,6 +2001,8 @@
       '<span class="small muted">回放日收盘时按当时数据生成，不含次日结果</span></div>' +
       (j.focus || []).map((f, i) => '<div class="dg-focus"><b>' + (i + 1) + '</b><span>' + E(f) + '</span></div>').join('') + '</div>';
     const list = j.list || [];
+    const perfMap = {};
+    ((j.review || {}).outcome || []).forEach(o => { if (o && o.code) perfMap[o.code] = o.perf; });
     const body = list.length
       ? '<div class="dg-layout"><div class="dg-list" id="dhList">' + list.map(x =>
         '<div class="dg-item' + (x.code === S.dgHistSelected ? ' active' : '') + '" data-code="' + E(x.code) + '">' +
@@ -1981,7 +2012,8 @@
         '<span class="tag ' + (x.roleRank === 1 ? 'red' : 'blue') + '">' + E(x.role) + '</span><span class="muted">' + E(x.industry) + '</span></div>' +
         '<div class="dg-mini-meters"><span>一致 ' + E(x.consensus) + '</span>' + dgBar(x.consensus, 'blue') +
         '<span>分歧 ' + E(x.divergence) + '</span>' + dgBar(x.divergence, 'red') + '</div>' +
-        '<div class="dg-item-bot">' + E(x.script && x.script.title || '') + '</div></div>').join('') + '</div>' +
+        '<div class="dg-item-bot">' + E(x.script && x.script.title || '') +
+        (perfMap[x.code] && perfMap[x.code].available ? '<span style="float:right">次日 ' + dhPct(perfMap[x.code].closePct) + '</span>' : '') + '</div></div>').join('') + '</div>' +
         '<div class="dg-detail" id="dhDetail"></div></div>'
       : '<div class="card empty">该交易日回放没有符合条件的龙头候选（可切到「全池对照」口径的回放或换一天）。</div>';
     const method = '<div class="card pad dg-method" id="dhMethodBox" style="display:' + (S.dgHistMethodOpen ? '' : 'none') + '">' +

@@ -720,10 +720,27 @@ async function getDragonReview(query, force) {
         limit: query.limit, showAll: query.showAll === undefined ? '1' : query.showAll, role: query.role,
         days
       };
-      const g = an.dragonReview(history, options);
+      let g = an.dragonReview(history, options);
       if (g.error) {
         return { error: g.error, availableDates: g.availableDates || [], meta: { ...beijingNow(), port: ACTIVE_PORT } };
       }
+      // 次日涨跌幅取真实日K：只有存在下一交易日时才拉（最新回放日无需请求），
+      // 限流并发 3 并复用日K共享缓存，避免触发上游 WAF；失败时如实降级，不影响晋级验证。
+      const perfCodes = g.review.nextDate
+        ? [...new Set((g.review.outcome || []).map(o => String(o.code)).filter(Boolean))].slice(0, 60)
+        : [];
+      let klines = {};
+      if (perfCodes.length) {
+        const krs = await limitedMap(perfCodes, 3, async c => {
+          const k = await ds.getKlineData(c, 60).catch(() => null);
+          return (k && Array.isArray(k.rows) && k.rows.length)
+            ? { code: c, rows: k.rows, source: k.source, adjusted: k.adjusted }
+            : null;
+        });
+        krs.forEach(x => { if (x) klines[x.code] = x; });
+      }
+      g = an.attachReviewPerf(g, klines);
+      const perf = (g.review.summary && g.review.summary.perf) || {};
       const meta = {
         ...beijingNow(),
         generatedAt: new Date().toISOString(),
@@ -735,6 +752,10 @@ async function getDragonReview(query, force) {
         conceptBoardCount: 0,
         elapsedMs: Date.now() - t0,
         isReview: true,
+        perfAvailable: perf.available || 0,
+        perfTotal: perf.total || 0,
+        perfSources: perf.sources || [],
+        perfAdjusted: perf.adjustedModes || [],
         dataSourceNote: g.metaNote + '；历史回放不接实时快照 / 指数 / 概念映射，「昨日连板今日溢价」按中性计，与当日实时版温度不直接可比。',
         disclaimer: DISCLAIMER
       };
