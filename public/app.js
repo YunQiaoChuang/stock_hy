@@ -383,6 +383,35 @@
 
     const risks = (rv.risks || []).map(r => '<li>' + E(r) + '</li>').join('');
 
+    // 昨日连板天梯今日晋级情况（已发生事实）
+    const pl = d.prevLadder || {};
+    const plSummary = pl.summary || {};
+    const plTiers = (pl.tiers || []).map(t =>
+      '<div class="pl-tier"><div class="pl-tier-head"><span class="pl-badge">' + E(t.boards) + '板</span>' +
+      '<span class="pl-cnt">昨 ' + E(t.total) + ' 家</span><span class="pl-rate">晋级 ' + E(t.promoted) + ' / ' + E(t.rate) + '%</span>' +
+      '<span class="pl-avg ' + (t.avgPct > 0 ? 'up' : t.avgPct < 0 ? 'down' : '') + '">今日均涨 ' + (t.avgPct > 0 ? '+' : '') + N(t.avgPct) + '%</span>' +
+      (t.limitDown ? tag('跌停 ' + t.limitDown, 'green') : '') + '</div>' +
+      '<div class="pl-stocks">' + t.stocks.map(x =>
+        '<span class="pl-stock ' + x.cls + '" title="' + E(x.code + ' · ' + (x.industry || '—') + ' · 昨' + x.prevBoards + '板 → 今' + (x.currBoards ? x.currBoards + '板' : x.status)) + '">' +
+        E(x.name) + '<b>' + (x.pct === null ? '—' : (x.pct > 0 ? '+' : '') + N(x.pct) + '%') + '</b>' +
+        '<i>' + E(x.status) + '</i></span>').join('') + '</div></div>').join('');
+    const prevLadderHtml = '<div class="sec"><div class="sec-head"><h3>昨日连板天梯 · 今日晋级情况</h3>' +
+      src('东方财富历史涨停池 ' + (pl.prevDate || '—') + ' → 今日涨停池 ' + (pl.currDate || '—') + ' + 腾讯证券实时快照') + '</div>' +
+      (pl.available && (pl.tiers || []).length
+        ? '<div class="card pad"><div class="pl-summary">' +
+          tag('昨日连板 ' + (plSummary.total || 0), 'blue') +
+          tag('晋级 ' + (plSummary.promoted || 0) + ' (' + (plSummary.rate === null ? '—' : plSummary.rate + '%') + ')', 'red') +
+          tag('回封 ' + (plSummary.relimit || 0), 'warn') +
+          tag('断板收红 ' + (plSummary.up || 0), 'red') +
+          tag('断板收绿 ' + (plSummary.down || 0), 'green') +
+          tag('跌停 ' + (plSummary.limitDown || 0), 'green') +
+          tag('平均涨幅 ' + (plSummary.avgPct === null ? '—' : ((plSummary.avgPct > 0 ? '+' : '') + N(plSummary.avgPct) + '%')), plSummary.avgPct > 0 ? 'red' : 'green') +
+          '</div><div class="pl-tiers">' + plTiers + '</div>' +
+          '<div class="note-box">' + E(pl.note || '') +
+          '<br>晋级＝今日仍在涨停池且连板数高于昨日；回封＝今日涨停但连板数未增加；断板＝今日未涨停（按实时涨跌幅分收红 / 收绿 / 跌停）。' +
+          '<b>这是已经发生的市场事实统计，不是买入信号，也不预测明日表现。</b></div></div>'
+        : '<div class="card empty">' + E(pl.reason || '昨日连板晋级数据暂不可用') + '</div>') + '</div>';
+
     $('pane-review').innerHTML =
       '<div class="sec"><div class="sec-head"><h3>一、盘面结构与状态诊断</h3>' + src('新浪财经全市场快照 / 腾讯证券指数 / 东方财富涨停池，时点 ' + TICK(m)) + '</div>' +
       '<div class="grid2"><div class="card pad"><div class="fact-list">' + facts + '</div></div>' +
@@ -391,6 +420,7 @@
       '<div class="note-box">空间板：' + space + '<br>梯队判读：' + E(ov.gap ? '存在断层，按 leader-game 框架属退潮前置信号，需次日 2/3 板补齐确认。' : '梯队连续无断层，情绪延续性优于断层结构。') +
       '<br>板块地位标注规则（按东财行业分组机械判定，非投资建议）：<b class="up">板块龙头</b>=同行业连板最高且封单最强；<b style="color:var(--warn)">反包核心 / 题材龙 / 封单核心</b>=累计板最高 / 连板最高 / 封单最强但不同时满足龙头条件；板块跟风=连板低于行业最高；独苗=行业仅 1 只涨停。<br>每层按封单比降序、首封时间升序排列；封单比 ≥1% 标红、0.3%~1% 标橙、&lt;0.3% 标灰，炸板次数越多风险越高。数据：东方财富涨停池 + 腾讯证券实时快照。' +
       '</div></div></div></div>' +
+      prevLadderHtml +
 
       '<div class="sec"><div class="sec-head"><h3>二、主线题材与生命周期</h3>' + src('东方财富涨停池行业归属 + 新浪财经板块行情，交易日 ' + (m.poolDate || '—')) + '</div>' +
       '<div class="grid2">' + (themes || '<div class="empty">当前无涨停题材分组数据</div>') + '</div>' +

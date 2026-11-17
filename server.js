@@ -162,11 +162,12 @@ async function buildDashboard(query) {
   delete f._;
 
   // 1) 四路数据并行
-  const [universe, pools, indices, boards] = await Promise.all([
+  const [universe, pools, indices, boards, prevHistory] = await Promise.all([
     ds.getUniverse().catch(() => ({ list: [], count: 0, asOf: new Date().toISOString() })),
     ds.getPools().catch(() => ({ zt: [], qs: [], zb: [], dt: [], date: '', asOf: new Date().toISOString() })),
     ds.getIndices().catch(() => []),
-    ds.getSectorBoards().catch(() => ({ industry: [], concept: [], asOf: new Date().toISOString() }))
+    ds.getSectorBoards().catch(() => ({ industry: [], concept: [], asOf: new Date().toISOString() })),
+    ds.getPoolFullHistory(3).catch(() => ({ dates: [], byDate: {}, note: '' }))
   ]);
 
   // 2) 板块筛选解析（新浪板块成分股）
@@ -214,6 +215,8 @@ async function buildDashboard(query) {
     Promise.resolve(an.liveOpportunities(pools, boards, universe, quotes, filtersWithSet))
   ]);
   const relay = an.relayPicks(pools, ov, themes, klineMap, quotes, filtersWithSet);
+  // 昨日连板天梯今日晋级情况：用已发生的历史池 + 今日快照，保守判定晋级 / 回封 / 断板
+  const prevLadder = an.prevLadderProgress(prevHistory, pools, quotes);
   const ai = an.aiResearch({
     ov, themes, review, picks, lowbuy, relay,
     meta: { universeTick: universe.ticktime, quoteTick, poolDate: pools.date }
@@ -243,7 +246,7 @@ async function buildDashboard(query) {
     disclaimer: DISCLAIMER
   };
 
-  return { meta, overview: ov, review, themes, picks, lowbuy, opportunities: opps, boards, relay, ai };
+  return { meta, overview: ov, review, themes, picks, lowbuy, opportunities: opps, boards, relay, ai, prevLadder };
 }
 
 /* ─────────── 涨停回调到支撑位（独立模块，避免拖慢主看板） ─────────── */
