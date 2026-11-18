@@ -214,6 +214,9 @@ async function buildDashboard(query) {
     Promise.resolve(an.boardLowBuy(pools, ov, themes, klineMap, quotes, filtersWithSet)),
     Promise.resolve(an.liveOpportunities(pools, boards, universe, quotes, filtersWithSet))
   ]);
+  // 连板天梯的历史优势组合标记：与「明日龙头」同一套地位 / 一致分歧规则，不参与任何评分
+  const dragonEdges = an.dragonEdgeMarks(pools, prevHistory);
+  (opps.zt || []).forEach(x => { if (dragonEdges[x.code]) x.dragonEdge = dragonEdges[x.code]; });
   const relay = an.relayPicks(pools, ov, themes, klineMap, quotes, filtersWithSet);
   // 昨日连板天梯今日晋级情况：用已发生的历史池 + 今日快照，保守判定晋级 / 回封 / 断板
   const prevLadder = an.prevLadderProgress(prevHistory, pools, quotes);

@@ -373,7 +373,10 @@
       const cls = seal >= 1 ? 'em-seal strong' : seal >= 0.3 ? 'em-seal mid' : 'em-seal weak';
       const sealCls = br === 0 ? 'em-br none' : br <= 2 ? 'em-br some' : 'em-br many';
       const sr = sectorRole.get(x.code) || { role: '', reason: '' };
-      return '<div class="em-stock" title="' + E(x.name + '(' + x.code + ') · ' + (x.industry || '—') + '\n板块地位：' + sr.role + '（' + sr.reason + '）') + '">' +
+      const edge = dgEdgeOf(x.dragonEdge);
+      const ttl = x.name + '(' + x.code + ') · ' + (x.industry || '—') + '\n板块地位：' + sr.role + '（' + sr.reason + '）' +
+        (edge ? '\n历史优势组合：' + dgEdgeTitle(edge) : '');
+      return '<div class="em-stock' + (edge ? ' dg-edge edge-' + E(edge.key) + '" data-edge-corner="★ ' + E(edge.label) + ' ' + E(edge.rate) + '" style="' + dgEdgeStyle(edge) : '') + '" title="' + E(ttl) + '">' +
         '<div class="em-stock-head"><b>' + E(x.name) + '</b><span class="em-code">' + E(x.code) + '</span></div>' +
         '<div class="em-stock-ind">' + E(x.industry || '—') +
         (sr.role ? '<span class="em-role ' + roleCls(sr.role) + '">' + E(sr.role) + '</span>' : '') + '</div>' +
@@ -445,6 +448,7 @@
       '<div class="grid2"><div class="card pad"><div class="fact-list">' + facts + '</div></div>' +
       '<div class="card pad"><h4 style="font-size:12.5px;margin-bottom:6px">连板天梯 <span class="small muted" style="font-weight:400">（东方财富式 · 按板级分层）</span></h4>' +
       '<div class="em-ladder">' + (tiersHtml || '<div class="empty">当日无连板梯队数据</div>') + '</div>' +
+      dgEdgeLegendCard(true) +
       '<div class="note-box">空间板：' + space + '<br>梯队判读：' + E(ov.gap ? '存在断层，按 leader-game 框架属退潮前置信号，需次日 2/3 板补齐确认。' : '梯队连续无断层，情绪延续性优于断层结构。') +
       '<br>板块地位标注规则（按东财行业分组机械判定，非投资建议）：<b class="up">板块龙头</b>=同行业连板最高且封单最强；<b style="color:var(--warn)">反包核心 / 题材龙 / 封单核心</b>=累计板最高 / 连板最高 / 封单最强但不同时满足龙头条件；板块跟风=连板低于行业最高；独苗=行业仅 1 只涨停。<br>每层按封单比降序、首封时间升序排列；封单比 ≥1% 标红、0.3%~1% 标橙、&lt;0.3% 标灰，炸板次数越多风险越高。数据：东方财富涨停池 + 腾讯证券实时快照。' +
       '</div></div></div></div>' +
@@ -1557,6 +1561,44 @@
   /* ═══════════ 明日龙头 · 只做龙头 / 买在分歧卖在一致 ═══════════ */
   const dgDtypeCls = d => ({ '良性分歧': 'red', '一致加速': 'warn', '恶性分歧': 'purple', '分歧偏弱': 'blue', '中性': '' }[d] || '');
   const dgToneCls = t => ({ primary: 'red', warn: 'warn', blue: 'blue', muted: '' }[t] || '');
+  // 历史复盘中晋级率较高的「地位 + 一致」组合；颜色与右上角标记仅按回放日已知字段生成。
+  const DG_EDGE_COMBOS = {
+    '空间板|一致加速': { key: 'space', label: '空间板+一致', rate: '61.5%', n: 13, avg: '+6.77%', win: '84.6%', color: '#d92b2b', bg: '#fdecec' },
+    '累计板龙|一致加速': { key: 'cum', label: '累计板龙+一致', rate: '50.0%', n: 16, avg: '+4.76%', win: '', color: '#6d4bd6', bg: '#f1edfd' },
+    '题材龙|一致加速': { key: 'theme', label: '题材龙+一致', rate: '40.0%', n: 20, avg: '', win: '', color: '#2f6fd0', bg: '#eaf2fd' }
+  };
+  function dgEdgeOf(x) {
+    if (!x || x.dtype !== '一致加速') return null;
+    return DG_EDGE_COMBOS[String(x.role) + '|' + String(x.dtype)] || null;
+  }
+  function dgEdgeStyle(edge) {
+    return '--edge:' + edge.color + ';--edge-bg:' + edge.bg;
+  }
+  function dgEdgeTitle(edge) {
+    return '历史复盘：' + edge.label + ' 晋级率 ' + edge.rate + '（n=' + edge.n + '）' +
+      (edge.avg ? '，均涨 ' + edge.avg : '') + (edge.win ? '，上涨占比 ' + edge.win : '') + '；仅为历史样本，不代表未来收益';
+  }
+  function dgEdgeBadge(x) {
+    const edge = dgEdgeOf(x);
+    if (!edge) return '';
+    return '<span class="dg-edge-inline edge-' + E(edge.key) + '" style="' + dgEdgeStyle(edge) +
+      '" title="' + E(dgEdgeTitle(edge)) + '">★ ' + E(edge.label) + ' ' + E(edge.rate) + '</span>';
+  }
+  function dgEdgeLegendCard(compact) {
+    const items = Object.keys(DG_EDGE_COMBOS).map(k => {
+      const e = DG_EDGE_COMBOS[k];
+      const detail = '晋级率 <b>' + E(e.rate) + '</b>（n=' + E(e.n) + '）' +
+        (e.avg ? ' · 均涨 <b>' + E(e.avg) + '</b>' : '') + (e.win ? ' · 上涨占比 <b>' + E(e.win) + '</b>' : '');
+      return '<div class="dg-edge-legend-item edge-' + E(e.key) + '" style="' + dgEdgeStyle(e) + '">' +
+        '<span class="dg-edge-swatch"></span><b>' + E(e.label) + '</b><span class="small muted">' + detail + '</span></div>';
+    }).join('');
+    const grid = '<div class="dg-edge-legend-grid' + (compact ? ' compact' : '') + '">' + items + '</div>';
+    const note = '<div class="note-box">样本来自 ' + E('2026-10-28 ~ 2026-11-16') +
+      ' 的历史回放，同一标的跨日重复出现、样本量小，且晋级率不等于收益率或可交易胜率；彩色边框只是复盘识别标记，不构成买卖信号。</div>';
+    if (compact) return '<div class="dg-h5" style="margin-top:11px">历史优势组合 · 彩色边框标记</div>' + grid + note;
+    return '<div class="card pad dg-card dg-edge-legend"><div class="dg-card-head"><h4>历史优势组合 · 彩色边框标记</h4>' +
+      '<span class="small muted">仅按当日「地位 + 一致加速」标记，不使用次日数据</span></div>' + grid + note + '</div>';
+  }
   const dgBar = (v, cls) => '<div class="dg-bar"><i class="' + (cls || 'blue') + '" style="width:'
     + Math.max(0, Math.min(100, Number(v) || 0)).toFixed(1) + '%"></i></div>';
   const dgNum = (v, suffix) => (v === null || v === undefined) ? '—' : E(v) + (suffix || '');
@@ -1785,8 +1827,10 @@
   }
 
   function dgListItems(j) {
-    return (j.list || []).map(x =>
-      '<div class="dg-item' + (x.code === S.dgSelected ? ' active' : '') + '" data-code="' + E(x.code) + '">' +
+    return (j.list || []).map(x => {
+      const edge = dgEdgeOf(x);
+      return '<div class="dg-item' + (x.code === S.dgSelected ? ' active' : '') + (edge ? ' dg-edge edge-' + E(edge.key) : '') +
+        '" data-code="' + E(x.code) + '"' + (edge ? ' data-edge-corner="★ ' + E(edge.label) + ' ' + E(edge.rate) + '" style="' + dgEdgeStyle(edge) + '" title="' + E(dgEdgeTitle(edge)) + '"' : '') + '>' +
       '<div class="dg-item-top"><b>' + E(x.name) + '</b><span class="code muted">' + E(x.code) + '</span>' +
       '<span class="tag ' + dgDtypeCls(x.dtype) + '">' + E(x.dtype) + '</span>' +
       '<span class="dg-score">' + E(x.score) + '</span></div>' +
@@ -1794,12 +1838,13 @@
       '<span class="muted">' + E(x.industry) + '</span></div>' +
       '<div class="dg-mini-meters"><span>一致 ' + E(x.consensus) + '</span>' + dgBar(x.consensus, 'blue') +
       '<span>分歧 ' + E(x.divergence) + '</span>' + dgBar(x.divergence, 'red') + '</div>' +
-      '<div class="dg-item-bot">' + E(x.script.title) + '</div>' + dgRiskBadges(x) + '</div>').join('');
+      '<div class="dg-item-bot">' + E(x.script.title) + '</div>' + dgRiskBadges(x) + '</div>';
+    }).join('');
   }
 
   function dgDetailHead(x) {
     return '<div class="card pad dg-detail-head"><div class="dg-dh-top"><h3>' + E(x.name) + ' <span class="muted" style="font-size:12px;font-weight:400">' + E(x.code) + '</span></h3>' +
-      tag(x.boardLabel || (x.boards + ' 板'), 'red') + tag(x.role, 'blue') + tag(x.dtype, dgDtypeCls(x.dtype)) +
+      tag(x.boardLabel || (x.boards + ' 板'), 'red') + tag(x.role, 'blue') + tag(x.dtype, dgDtypeCls(x.dtype)) + dgEdgeBadge(x) +
       tag('观察优先级 ' + x.score, 'purple') + '<span class="muted small">' + E(x.industry) + ' · ' + E(x.board) + '</span></div>' +
       '<div class="dg-dh-reason"><b>地位依据：</b>' + E(x.roleReason) + '</div>' +
       '<div class="dg-kv-grid">' +
@@ -1974,11 +2019,11 @@
     const tbl = rows.length
       ? '<div class="tbl-wrap"><table><thead><tr><th>标的</th><th>地位</th><th>分歧类型</th><th>回放日连板</th><th>次日连板</th><th>结果</th><th>次日涨跌幅（收盘）</th><th>观察优先级</th></tr></thead><tbody>' +
         rows.map(o => {
-          const p = o.perf || {};
+          const p = o.perf || {}, edge = dgEdgeOf(o);
           const pc = p.available
             ? dhPct(p.closePct) + '<div class="small muted">开 ' + dhPctSmall(p.openPct) + ' / 高 ' + dhPctSmall(p.highPct) + ' / 低 ' + dhPctSmall(p.lowPct) + '</div>'
             : '<span class="small muted">' + E(p.reason || '无数据') + '</span>';
-          return '<tr><td><b>' + E(o.name) + '</b><div class="small muted">' + E(o.code) + (o.theme ? ' · ' + E(o.theme) : '') + '</div></td>' +
+          return '<tr' + (edge ? ' class="dg-edge-row edge-' + E(edge.key) + '" style="' + dgEdgeStyle(edge) + '" title="' + E(dgEdgeTitle(edge)) + '"' : '') + '><td><b>' + E(o.name) + '</b>' + dgEdgeBadge(o) + '<div class="small muted">' + E(o.code) + (o.theme ? ' · ' + E(o.theme) : '') + '</div></td>' +
             '<td>' + E(o.role) + '</td><td>' + E(o.dtype) + '</td><td>' + E(o.boards) + ' 板</td><td>' + (o.nextBoards === null ? '—' : E(o.nextBoards) + ' 板') + '</td>' +
             '<td>' + tag(o.resultLabel, o.result === 'promoted' ? 'red' : o.result === 'broken' ? 'green' : o.result === 'pending' ? '' : 'blue') + '</td>' +
             '<td>' + pc + '</td><td>' + E(o.score) + '</td></tr>';
@@ -2004,8 +2049,10 @@
     const perfMap = {};
     ((j.review || {}).outcome || []).forEach(o => { if (o && o.code) perfMap[o.code] = o.perf; });
     const body = list.length
-      ? '<div class="dg-layout"><div class="dg-list" id="dhList">' + list.map(x =>
-        '<div class="dg-item' + (x.code === S.dgHistSelected ? ' active' : '') + '" data-code="' + E(x.code) + '">' +
+      ? '<div class="dg-layout"><div class="dg-list" id="dhList">' + list.map(x => {
+        const edge = dgEdgeOf(x);
+        return '<div class="dg-item' + (x.code === S.dgHistSelected ? ' active' : '') + (edge ? ' dg-edge edge-' + E(edge.key) : '') +
+          '" data-code="' + E(x.code) + '"' + (edge ? ' data-edge-corner="★ ' + E(edge.label) + ' ' + E(edge.rate) + '" style="' + dgEdgeStyle(edge) + '" title="' + E(dgEdgeTitle(edge)) + '"' : '') + '>' +
         '<div class="dg-item-top"><b>' + E(x.name) + '</b><span class="code muted">' + E(x.code) + '</span>' +
         '<span class="tag ' + dgDtypeCls(x.dtype) + '">' + E(x.dtype) + '</span><span class="dg-score">' + E(x.score) + '</span></div>' +
         '<div class="dg-item-mid"><span>' + E(x.boardLabel || (x.boards + ' 板')) + '</span>' +
@@ -2013,7 +2060,8 @@
         '<div class="dg-mini-meters"><span>一致 ' + E(x.consensus) + '</span>' + dgBar(x.consensus, 'blue') +
         '<span>分歧 ' + E(x.divergence) + '</span>' + dgBar(x.divergence, 'red') + '</div>' +
         '<div class="dg-item-bot">' + E(x.script && x.script.title || '') +
-        (perfMap[x.code] && perfMap[x.code].available ? '<span style="float:right">次日 ' + dhPct(perfMap[x.code].closePct) + '</span>' : '') + '</div></div>').join('') + '</div>' +
+        (perfMap[x.code] && perfMap[x.code].available ? '<span style="float:right">次日 ' + dhPct(perfMap[x.code].closePct) + '</span>' : '') + '</div></div>';
+      }).join('') + '</div>' +
         '<div class="dg-detail" id="dhDetail"></div></div>'
       : '<div class="card empty">该交易日回放没有符合条件的龙头候选（可切到「全池对照」口径的回放或换一天）。</div>';
     const method = '<div class="card pad dg-method" id="dhMethodBox" style="display:' + (S.dgHistMethodOpen ? '' : 'none') + '">' +
@@ -2024,7 +2072,7 @@
     $('pane-dragon').innerHTML = bar + dgHead(j) +
       '<div class="dh-method-toggle"><button class="btn" id="dhMethod">查看回放口径与边界</button></div>' + method +
       dgSentimentCard(j) + '<div class="dg-grid2">' + dgLadderCard(j) + dgThemesCard(j) + '</div>' +
-      dgThemeUnderstandingCard(j) + focus + dgValidationCard(j) +
+      dgThemeUnderstandingCard(j) + focus + dgValidationCard(j) + dgEdgeLegendCard() +
       dgHistOutcomeCard(j) + body + disc;
 
     const setDate = d => { if (d) { S.dgHistSelected = String(d); loadDragonHistory(S.dgHistSelected, false); } };
@@ -2084,7 +2132,7 @@
     $('pane-dragon').innerHTML = dgHead(j) + dgSource(j) + nwPanel() + dgSentimentCard(j) +
       '<div class="dg-grid2">' + dgLadderCard(j) + dgThemesCard(j) + '</div>' +
       dgThemeUnderstandingCard(j) +
-      focus + dgValidationCard(j) + dgMethodCard(j) + dgRiskMethodCard(j) + body + excl + disc;
+      focus + dgValidationCard(j) + dgEdgeLegendCard() + dgMethodCard(j) + dgRiskMethodCard(j) + body + excl + disc;
 
     $('dgReload').onclick = () => loadDragon(true);
     $('dgShowAll').onchange = e => { S.dgOpts.showAll = Number(e.target.value); loadDragon(true); };
