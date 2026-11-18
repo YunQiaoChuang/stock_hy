@@ -1386,10 +1386,32 @@
       '<div class="pb-trace-line">' + E(x.sourceNote) + '　|　涨停日交叉校验：' + E(x.ztSourceNote) + '</div></div>';
   }
 
+  /** 板块涨停阈值：与后端 limitUpCut 同一口径，用于K线状态着色 */
+  function klineLimitCut(code) {
+    const s = String(code || '');
+    if (/^(300|301|688|689)/.test(s)) return 19.5;
+    if (/^(8|4|920)/.test(s)) return 29.5;
+    return 9.7;
+  }
   /** 零依赖 SVG K 线图：蜡烛 + 成交量 + 均线 + 水平支撑/压力线 + 右侧标签 + 观察区 */
   function klineCard(x) {
     const c = x.chart || {}, bars = c.bars || [];
     if (bars.length < 10) return '<div class="card empty">该标的日K数据不足，无法绘制K线图（不生成示意图）</div>';
+    // K线状态配色（默认规则）：涨停=黄、跌停=紫、炸板=蓝，其余保留红涨绿跌
+    const KC = { zt: '#e3a800', dt: '#6d4bd6', zb: '#2f6fd0', up: '#d92b2b', down: '#0f9960' };
+    const kth = klineLimitCut(x.code);
+    // 逐根判定：涨停=收盘涨幅≥阈值；跌停=收盘跌幅≤-阈值；炸板=盘中最高触板但收盘未封住
+    const states = bars.map((b, i) => {
+      const prev = i > 0 ? bars[i - 1].close : null;
+      const plain = b.close >= b.open ? 'up' : 'down';
+      if (!prev) return plain;
+      const chg = (b.close - prev) / prev * 100, hi = (b.high - prev) / prev * 100;
+      if (chg >= kth) return 'zt';
+      if (chg <= -kth) return 'dt';
+      if (hi >= kth) return 'zb';
+      return plain;
+    });
+    const barColor = i => KC[states[i]];
     const W = 940, H = 438, L = 58, R = 136, PW = W - L - R;
     const PT = 28, PB = 292, VT = 312, VB = 372, DY = 392;
     let minP = Math.min(...bars.map(b => b.low)), maxP = Math.max(...bars.map(b => b.high));
@@ -1417,9 +1439,10 @@
       a.push('<text x="' + (L + 5) + '" y="' + (y1 - 4).toFixed(1) + '" font-size="10" fill="#2f6fd0">回踩观察区 ' + N(c.zone[0]) + '–' + N(c.zone[1]) + '</text>');
     }
     bars.forEach((b, i) => {
-      const cx = CX(i), col = b.close >= b.open ? '#d92b2b' : '#0f9960';
+      const cx = CX(i), col = barColor(i), st = states[i];
       const yo = Y(b.open), yc = Y(b.close), yh = Y(b.high), yl = Y(b.low);
-      const tip = E(b.date) + ' 开 ' + N(b.open) + ' 高 ' + N(b.high) + ' 低 ' + N(b.low) + ' 收 ' + N(b.close) + ' 量 ' + E(b.volume);
+      const stName = { zt: '涨停', dt: '跌停', zb: '炸板', up: '上涨', down: '下跌' }[st];
+      const tip = E(b.date) + ' [' + stName + '] 开 ' + N(b.open) + ' 高 ' + N(b.high) + ' 低 ' + N(b.low) + ' 收 ' + N(b.close) + ' 量 ' + E(b.volume);
       a.push('<g><title>' + tip + '</title>');
       a.push('<line x1="' + cx.toFixed(1) + '" y1="' + yh.toFixed(1) + '" x2="' + cx.toFixed(1) + '" y2="' + yl.toFixed(1) + '" stroke="' + col + '" stroke-width="1"/>');
       a.push('<rect x="' + (cx - bw / 2).toFixed(1) + '" y="' + Math.min(yo, yc).toFixed(1) + '" width="' + bw.toFixed(1) +
@@ -1458,8 +1481,8 @@
     if (zi >= 0) {
       const cx = CX(zi), top = Y(bars[zi].high);
       a.push('<path d="M' + (cx - 5).toFixed(1) + ' ' + (top - 9).toFixed(1) + ' L' + (cx + 5).toFixed(1) + ' ' + (top - 9).toFixed(1) +
-        ' L' + cx.toFixed(1) + ' ' + (top - 3).toFixed(1) + ' Z" fill="#d92b2b"/>');
-      a.push('<text x="' + cx.toFixed(1) + '" y="' + (top - 12).toFixed(1) + '" text-anchor="middle" font-size="9.5" fill="#d92b2b" font-weight="700">涨停</text>');
+        ' L' + cx.toFixed(1) + ' ' + (top - 3).toFixed(1) + ' Z" fill="' + KC.zt + '"/>');
+      a.push('<text x="' + cx.toFixed(1) + '" y="' + (top - 12).toFixed(1) + '" text-anchor="middle" font-size="9.5" fill="' + KC.zt + '" font-weight="700">涨停</text>');
     }
     const hi = bars.findIndex(b => b.date === c.highDate);
     if (hi >= 0) {
@@ -1470,7 +1493,7 @@
     a.push('<line x1="' + L + '" y1="' + VT + '" x2="' + (L + PW) + '" y2="' + VT + '" stroke="#eef2f7"/>');
     a.push('<text x="' + (L - 7) + '" y="' + (VT + 10) + '" text-anchor="end" font-size="9" fill="#8593a3">量</text>');
     bars.forEach((b, i) => {
-      const h = (b.volume || 0) / maxV * (VB - VT - 4), col = b.close >= b.open ? '#d92b2b' : '#0f9960';
+      const h = (b.volume || 0) / maxV * (VB - VT - 4), col = barColor(i);
       a.push('<rect x="' + (CX(i) - bw / 2).toFixed(1) + '" y="' + (VB - h).toFixed(1) + '" width="' + bw.toFixed(1) +
         '" height="' + Math.max(1, h).toFixed(1) + '" fill="' + col + '" opacity="0.55"><title>' + E(b.date) + ' 成交量 ' + E(b.volume) + '</title></rect>');
     });
@@ -1479,19 +1502,19 @@
       if (i % step === 0 || i === bars.length - 1)
         a.push('<text x="' + CX(i).toFixed(1) + '" y="' + DY + '" text-anchor="middle" font-size="9.5" fill="#8593a3">' + E(String(b.date).slice(5)) + '</text>');
     });
-    const legend = [['#d92b2b', '阳线'], ['#0f9960', '阴线'], ['#e8912a', 'MA5'], ['#2f6fd0', 'MA10/支撑'], ['#6d4bd6', 'MA20'], ['#0f7b6c', '主支撑'], ['#d92b2b', '压力位']];
+    const legend = [[KC.zt, '涨停'], [KC.dt, '跌停'], [KC.zb, '炸板'], [KC.up, '阳线'], [KC.down, '阴线'], ['#e8912a', 'MA5'], ['#2f6fd0', 'MA10'], ['#6d4bd6', 'MA20'], ['#0f7b6c', '主支撑'], ['#d92b2b', '压力位']];
     let lx = L;
     legend.forEach(pair => {
       a.push('<rect x="' + lx + '" y="8" width="8" height="8" rx="2" fill="' + pair[0] + '"/>');
       a.push('<text x="' + (lx + 12) + '" y="16" font-size="10" fill="#6b7a8c">' + pair[1] + '</text>');
-      lx += 92;
+      lx += 84;
     });
     a.push('<text x="' + L + '" y="420" font-size="10" fill="#8593a3">日K：' + E(c.source || '—') + '（截至 ' + E(c.asOf || '—') + '，' + bars.length +
       ' 根）；划线由本系统按规则从真实日K计算，非交易所数据；鼠标悬停K线可查看当日 OHLC。</text>');
     a.push('</svg>');
     return '<div class="card pb-chart-card"><div class="pb-chart-head"><h4>日K线图与支撑 / 压力划线</h4>' + src(x.sourceNote) + '</div>' +
       '<div class="pb-svg-wrap">' + a.join('') + '</div>' +
-      '<div class="note-box">图上只标注最重要的 4 条支撑 + 3 条压力（距现价过远的线不画，避免压缩K线），完整清单与每条线的生成依据见下方「划线解释」。蓝色 / 绿色虚线为支撑，红色虚线为压力，粗绿虚线为主支撑，浅蓝阴影为回踩观察区。</div></div>';
+      '<div class="note-box"><b>K线默认着色</b>：<span style="color:' + KC.zt + ';font-weight:700">涨停=黄</span> / <span style="color:' + KC.dt + ';font-weight:700">跌停=紫</span> / <span style="color:' + KC.zb + ';font-weight:700">炸板=蓝</span>（盘中最高触及涨停但收盘未封住）；普通K线仍红涨绿跌。涨停 / 跌停按收盘较前收盘涨跌幅达板块阈值（主板 ' + kth + '%）判定，炸板按盘中最高触及阈值收盘未封判定，均为真实日K机械识别、非当日池标签。<br>图上只标注最重要的 4 条支撑 + 3 条压力（距现价过远的线不画，避免压缩K线），完整清单与每条线的生成依据见下方「划线解释」。蓝色 / 绿色虚线为支撑，红色虚线为压力，粗绿虚线为主支撑，浅蓝阴影为回踩观察区。</div></div>';
   }
 
   function lineExplanations(x) {
