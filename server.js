@@ -393,6 +393,56 @@ async function buildPullback(query) {
   return { meta, summary, methodology: an.PULLBACK_METHOD, list };
 }
 
+/**
+ * 个股K线弹窗聚合：一次性返回日K / 周K / 筹码峰 + 实时快照。
+ * 筹码峰为模型估算，明确标注口径；所有K线数据来自 datasource，本函数不产生行情数字。
+ */
+async function getStockChart(query) {
+  const code = String(query.code || '').replace(/\D/g, '').slice(0, 6);
+  if (!/^\d{6}$/.test(code)) return { error: '缺少有效的 6 位股票代码', code: code || null };
+  const t0 = Date.now();
+  const dayLimit = 160, weekLimit = 80;
+  const [day, week, quotes] = await Promise.all([
+    ds.getKlineData(code, dayLimit).catch(() => ({ rows: [], source: null, adjusted: null })),
+    ds.getPeriodKline(code, 'week', weekLimit).catch(() => ({ rows: [], source: null, adjusted: false })),
+    ds.getQQQuotes([code]).catch(() => ({}))
+  ]);
+  const q = quotes[code] || {};
+  const price = Number(q.price) > 0 ? Number(q.price) : (day.rows.length ? day.rows[day.rows.length - 1].close : null);
+  const chipOpts = { price, floatCap: Number(q.floatCap) > 0 ? Number(q.floatCap) : null, period: 'day', limit: 120 };
+  const chipDay = an.chipDistribution(day.rows, chipOpts);
+  const chipWeek = an.chipDistribution(week.rows, { ...chipOpts, period: 'week', limit: 80 });
+  // 解析名称：优先实时行情，其次从 universe/代码兜底，避免弹窗显示代码本身
+  let name = q.name || null;
+  if (!name) {
+    try {
+      const uni = await ds.getUniverse();
+      const hit = (uni.list || []).find(x => x.code === code);
+      if (hit) name = hit.name;
+    } catch (e) { /* 名称非关键字段，失败不影响K线 */ }
+  }
+  return {
+    code, name: name || code,
+    quote: {
+      price: Number.isFinite(price) ? price : null, pct: q.pct ?? null,
+      floatCap: q.floatCap ?? null, turnover: q.turnover ?? null,
+      high: q.high ?? null, low: q.low ?? null, open: q.open ?? null,
+      prevClose: q.prevClose ?? null, asOf: q.ticktime || null
+    },
+    day: { rows: day.rows, source: day.source, adjusted: day.adjusted, asOf: day.asOf },
+    week: { rows: week.rows, source: week.source, adjusted: week.adjusted, asOf: week.asOf, reason: week.reason || null },
+    chip: { day: chipDay, week: chipWeek },
+    method: {
+      day: '日K：腾讯证券前复权优先，限流时自动降级新浪财经不复权；来源见各周期 source 字段。',
+      week: '周K：腾讯证券 kline 接口（不复权），与日K复权口径不同，仅供趋势结构参考。',
+      chip: an.chipDistribution && chipDay
+        ? '筹码峰由' + chipDay.method + ' 换手口径：' + chipDay.turnoverModel + '。峰值/成本区间为模型估算，非交易所真实持仓成本分布，不构成买卖依据。'
+        : '筹码峰数据不足（K线根数不够），本次不生成。'
+    },
+    meta: { ...beijingNow(), generatedAt: new Date().toISOString(), elapsedMs: Date.now() - t0, disclaimer: DISCLAIMER }
+  };
+}
+
 async function getPullback(query, force) {
   const now = Date.now();
   const key = JSON.stringify(query);
@@ -1045,6 +1095,7 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, { quotes: await ds.getQQQuotes(codes), asOf: new Date().toISOString(), source: '腾讯证券实时行情' });
     }
     if (u.pathname === '/api/kline') return sendJson(res, { code: q.code, kline: await ds.getKline(q.code, Number(q.limit) || 90), source: '腾讯证券日K(前复权)' });
+    if (u.pathname === '/api/stock/chart') return sendJson(res, await getStockChart(q));
     if (u.pathname === '/api/universe') {
       const uni = await ds.getUniverse();
       const rows = an.applyFilters(uni.list, q, null);

@@ -13,8 +13,56 @@
   const YI = v => (v === null || v === undefined || !Number.isFinite(Number(v))) ? '—' : (Number(v) / 1e8).toFixed(2) + '亿';
   const tag = (t, cls) => '<span class="tag ' + (cls || '') + '">' + E(t) + '</span>';
   const src = s => '<span class="src">来源：' + E(s) + '</span>';
+  /* 可点击股票名：统一带 data-stock-code，点击弹K线。cls 保留原样式类 */
+  const sn = (code, name, cls) => '<span class="stock-link ' + (cls || '') + '" data-stock-code="' + E(code) + '" title="点击查看K线 / 周K / 筹码峰">' + E(name) + '</span>';
   const TICK = m => m.quoteTick || m.universeTick || (m.now ? m.now.slice(11, 16) : '—');
   const fmtDate = v => { const s = String(v || '').replace(/\D/g, ''); return s.length === 8 ? s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8) : (v || '—'); };
+
+  /* ── K线涨跌停/炸板配色（可在弹窗内自定义，存 localStorage） ── */
+  const KL_COLOR_KEY = 'stockhy_kline_colors_v1';
+  const KL_COLOR_DEFAULT = { up: '#d92b2b', down: '#0f9960', limitUp: '#c2185b', limitDown: '#00695c', broken: '#f08c00' };
+  const KL_COLOR_META = [
+    { k: 'up', label: '阳线（收涨）' }, { k: 'down', label: '阴线（收跌）' },
+    { k: 'limitUp', label: '涨停' }, { k: 'limitDown', label: '跌停' }, { k: 'broken', label: '炸板' }
+  ];
+  function klLoadColors() {
+    try {
+      const s = JSON.parse(localStorage.getItem(KL_COLOR_KEY) || 'null');
+      const o = {};
+      KL_COLOR_META.forEach(m => {
+        const v = s && s[m.k];
+        o[m.k] = /^#[0-9a-fA-F]{6}$/.test(v || '') ? v : KL_COLOR_DEFAULT[m.k];
+      });
+      return o;
+    } catch (e) { return Object.assign({}, KL_COLOR_DEFAULT); }
+  }
+  function klSaveColors() {
+    try { localStorage.setItem(KL_COLOR_KEY, JSON.stringify(S.klColors)); } catch (e) { /* 隐私模式下忽略 */ }
+  }
+  /* 涨跌幅上限：主板10% / 创业板+科创板20% / 北交所30% / ST 5% */
+  function klLimitRate(code, name) {
+    const c = String(code || ''), nm = String(name || '').toUpperCase();
+    if (nm.indexOf('ST') >= 0) return 0.05;
+    if (/^(30|688|689)/.test(c)) return 0.20;
+    if (/^(4|8|920)/.test(c)) return 0.30;
+    return 0.10;
+  }
+  /* 从 OHLC + 前收推算单根K线类型：limitUp / limitDown / broken / null
+     封板按收盘价判定；炸板=盘中触及涨停(或跌停)价但收盘未封住。
+     0.3% 容差覆盖前复权与四舍五入误差。仅日K使用（周K无涨跌停制度）。 */
+  function klBarKind(rows, i, code, name) {
+    if (i <= 0) return null;
+    const b = rows[i], prev = rows[i - 1];
+    if (!b || !prev || !prev.close || b.close === null || b.high === null || b.low === null) return null;
+    const rate = klLimitRate(code, name), tol = 0.003;
+    const upPct = b.close / prev.close - 1;
+    const hiPct = b.high / prev.close - 1;
+    const loPct = b.low / prev.close - 1;
+    if (upPct >= rate - tol) return 'limitUp';
+    if (upPct <= -(rate - tol)) return 'limitDown';
+    if (hiPct >= rate - tol || loPct <= -(rate - tol)) return 'broken';
+    return null;
+  }
 
   /* 「连不上本地服务」与「上游数据源不可用」是两类完全不同的故障，提示不能混为一谈 */
   const SERVICE_HINT = '本地服务未响应：请确认 A股实时复盘系统已启动（双击项目目录 start.bat，或在项目目录运行 node server.js）；默认端口 8899，被占用时会自动顺延，请以控制台输出的「本机访问」地址为准。';
@@ -42,7 +90,9 @@
     newsInterval: 30, newsWindow: 72, newsPaused: false, newsFilter: 'all',
     newsKeyword: '', newsMethodOpen: false, newsShowAll: false,
     newsTimer: null, newsTickTimer: null, newsNextAt: 0, newsCodes: '',
-    en: null, enLoading: false, enError: null, enOpts: { days: 8 }
+    en: null, enLoading: false, enError: null, enOpts: { days: 8 },
+    chart: { open: false, code: null, name: null, period: 'day', data: null, loading: false, error: null, view: null, geom: null, lockIdx: null },
+    klColors: klLoadColors(), klPanelOpen: false
   };
   // 消息面三个源只在「明日龙头」模块启用后才调用，未调用前不计入主看板在线率分母
   const NEWS_KEYS = ['emAnn', 'sinaFlash', 'emFlash'];
@@ -85,9 +135,32 @@
     ['capMin', 'capMax', 'pctMin', 'pctMax', 'turnoverMin', 'turnoverMax', 'keyword'].forEach(id => {
       $(id).addEventListener('keydown', e => { if (e.key === 'Enter') refresh(true); });
     });
+    // 全局股票名点击委托：打开个股K线弹窗
+    document.addEventListener('click', e => {
+      const el = e.target.closest('[data-stock-code]');
+      if (el) { e.preventDefault(); e.stopPropagation(); openStockChart(el.dataset.stockCode); return; }
+      if (e.target.closest('#smClose') || e.target.id === 'stockModal') closeStockChart();
+    });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && S.chart.open) closeStockChart(); });
+    if ($('smClose')) $('smClose').onclick = closeStockChart;
+    [...document.querySelectorAll('.sm-tab')].forEach(b => {
+      b.onclick = () => { if (S.chart.data && b.dataset.period !== S.chart.period) { S.chart.period = b.dataset.period; S.chart.view = null; S.chart.lockIdx = null; renderStockChart(); } };
+    });
     loadBoards();
-    const initTab = new URLSearchParams(location.search).get('tab');
+    const qs = new URLSearchParams(location.search);
+    const initTab = qs.get('tab');
     if (initTab && ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'enlighten'].indexOf(initTab) >= 0) switchTab(initTab);
+    // 深链：?stock=000001&period=week 直接打开个股K线弹窗
+    const initStock = qs.get('stock');
+    if (/^\d{6}$/.test(initStock || '')) {
+      openStockChart(initStock);
+      if (qs.get('period') === 'week') S.chart.period = 'week';
+      const z = Number(qs.get('zoom'));
+      if (z >= 6 && z <= 1000) S.chart._initZoom = Math.round(z);
+      const d = qs.get('day');
+      if (/^\d{8}$/.test(d || '')) S.chart._initLock = d;
+      if (qs.get('colors') === '1') S.klPanelOpen = true;
+    }
     refresh(true);
     startTimer();
   }
@@ -377,7 +450,7 @@
       const ttl = x.name + '(' + x.code + ') · ' + (x.industry || '—') + '\n板块地位：' + sr.role + '（' + sr.reason + '）' +
         (edge ? '\n历史优势组合：' + dgEdgeTitle(edge) : '');
       return '<div class="em-stock' + (edge ? ' dg-edge edge-' + E(edge.key) + '" data-edge-corner="★ ' + E(edge.label) + ' ' + E(edge.rate) + '" style="' + dgEdgeStyle(edge) : '') + '" title="' + E(ttl) + '">' +
-        '<div class="em-stock-head"><b>' + E(x.name) + '</b><span class="em-code">' + E(x.code) + '</span></div>' +
+        '<div class="em-stock-head"><b>' + sn(x.code, x.name) + '</b><span class="em-code">' + E(x.code) + '</span></div>' +
         '<div class="em-stock-ind">' + E(x.industry || '—') +
         (sr.role ? '<span class="em-role ' + roleCls(sr.role) + '">' + E(sr.role) + '</span>' : '') + '</div>' +
         '<div class="em-stock-meta"><span>首封 ' + E(x.firstSeal || '—') + '</span>' +
@@ -490,7 +563,7 @@
         '<div class="note-box">评分由动量、题材热度、封板质量、量能、市值位置、日内强弱六个可量化因子加总；仅为排序依据，不代表收益预期。需等待回踩企稳与板块支持确认。</div></div></div>';
       const vcls = x.verdict === '重点观察' ? 'red' : (x.verdict === '可跟踪' ? 'warn' : '');
       return '<tr class="clickable" data-pick="' + E(x.code) + '">' +
-        '<td class="left"><span class="code">' + E(x.code) + '</span> <span class="nm">' + E(x.name) + '</span>' + (x.isST ? ' <span class="mini-tag">ST</span>' : '') + '</td>' +
+        '<td class="left"><span class="code">' + E(x.code) + '</span> ' + sn(x.code, x.name, 'nm') + (x.isST ? ' <span class="mini-tag">ST</span>' : '') + '</td>' +
         '<td><span class="mini-tag">' + E(x.board || '—') + '</span></td>' +
         '<td class="' + flashCls(x.code, x.price) + '">' + N(x.price) + '</td>' +
         '<td>' + PC(x.pct) + '</td><td>' + (x.boards || 1) + '</td>' +
@@ -524,7 +597,7 @@
     const body = rows.map(x => '<tr>' + cols.map(c => '<td class="' + (c.left ? 'left ' : '') + (c.flash ? flashCls(x.code, x.price) : '') + '">' + c.f(x) + '</td>').join('') + '</tr>').join('');
     return '<div class="tbl-wrap"><table>' + head + '<tbody>' + body + '</tbody></table></div>';
   }
-  const nameCell = x => '<span class="code">' + E(x.code) + '</span> <span class="nm">' + E(x.name) + '</span>';
+  const nameCell = x => '<span class="code">' + E(x.code) + '</span> ' + sn(x.code, x.name, 'nm');
   const baseCols = [
     { t: '代码 / 名称', left: true, f: nameCell },
     { t: '板块', f: x => '<span class="mini-tag">' + E(x.board || '—') + '</span>' },
@@ -672,7 +745,7 @@
       const L = x.live;
       return '<tr class="clickable" data-jump="' + E(x.code) + '" title="点击查看该股完整研判卡片">' +
         '<td><span class="lb-live-rank' + (i < 3 && L.rank <= 2 ? ' top' : '') + '">' + (i + 1) + '</span></td>' +
-        '<td class="left"><span class="code">' + E(x.code) + '</span> <span class="nm">' + E(x.name) + '</span>' +
+        '<td class="left"><span class="code">' + E(x.code) + '</span> ' + sn(x.code, x.name, 'nm') +
         '<div class="small muted">' + E(x.boards) + ' 连板 · ' + E((x.theme && x.theme.name) || x.industry || '无题材') + '</div></td>' +
         '<td class="' + flashCls(x.code, x.price) + '">' + N(x.price) + '</td>' +
         '<td>' + PC(x.pct) + '</td>' +
@@ -761,7 +834,7 @@
 
       return '<div class="lb-card' + (collapsed ? ' lb-collapsed' : '') + '" id="lbCard_' + E(x.code) + '" data-code="' + E(x.code) + '">' +
         '<div class="lb-head" data-toggle="' + E(x.code) + '">' +
-        '<span class="lb-name">' + E(x.name) + '</span><span class="lb-code">' + E(x.code) + '</span>' +
+        '<span class="lb-name">' + sn(x.code, x.name) + '</span><span class="lb-code">' + E(x.code) + '</span>' +
         '<span class="lb-boards">' + E(x.boards) + ' 连板</span>' +
         '<span class="mini-tag">' + E(x.board) + '</span>' +
         '<span class="lb-price ' + (x.pct > 0 ? 'up' : x.pct < 0 ? 'down' : '') + '">' + N(x.price) + '</span>' + PC(x.pct) +
@@ -880,7 +953,7 @@
         '<ul class="tight">' + (x.invalidate || []).map(z => '<li>' + E(z) + '</li>').join('') + '</ul></div></div></div>';
 
       return '<tr class="clickable" data-cat="' + E(x.category) + '" data-relay="' + E(x.code) + '">' +
-        '<td class="left"><span class="code">' + E(x.code) + '</span> <span class="nm">' + E(x.name) + '</span></td>' +
+        '<td class="left"><span class="code">' + E(x.code) + '</span> ' + sn(x.code, x.name, 'nm') + '</td>' +
         '<td class="left">' + tag(x.category, x.reverse && x.reverse.isReverse ? 'purple' : 'blue') + '</td>' +
         '<td><b class="up">' + E(x.boards) + '</b></td>' +
         '<td class="' + flashCls(x.code, x.price) + '">' + N(x.price) + '</td>' +
@@ -959,7 +1032,7 @@
       '<div class="small muted" style="margin-top:7px">依据：' + E((s.basis || []).join('、')) + '</div></div>'
     ).join('');
     const topRows = (ai.topPicks || []).map((x, i) =>
-      '<tr><td class="left"><b>' + (i + 1) + '</b></td><td class="left"><span class="code">' + E(x.code) + '</span> <span class="nm">' + E(x.name) + '</span></td>' +
+      '<tr><td class="left"><b>' + (i + 1) + '</b></td><td class="left"><span class="code">' + E(x.code) + '</span> ' + sn(x.code, x.name, 'nm') + '</td>' +
       '<td>' + N(x.price) + '</td><td>' + PC(x.pct) + '</td><td>' + CAP(x.floatCap) + '</td>' +
       '<td>' + E(x.resonance) + '</td><td><b class="' + (x.composite >= 70 ? 'up' : '') + '">' + E(x.composite) + '</b></td>' +
       '<td class="left">' + (x.modules || []).map(z => tag(z, 'blue')).join(' ') + '</td>' +
@@ -1139,7 +1212,7 @@
     const detail = rows.slice(0, 100).map(r => {
       const o = r.outcome || {};
       return '<tr><td>' + E(btDateLabel(r.date)) + '</td>' +
-        '<td><b>' + E(r.name) + '</b><br><span class="code">' + E(r.code) + '</span></td>' +
+        '<td><b>' + sn(r.code, r.name) + '</b><br><span class="code">' + E(r.code) + '</span></td>' +
         '<td>' + tag(r.level, btLevelCls(r.level)) + '</td><td>' + E(r.score) + '</td>' +
         '<td>' + N(o.entry) + '</td><td>' + N(o.target) + '</td><td>' + N(o.stop) + '</td>' +
         '<td class="small">' + (o.windowHigh === null || o.windowHigh === undefined ? '—' : N(o.windowHigh) + ' / ' + N(o.windowLow)) + '</td>' +
@@ -1319,7 +1392,7 @@
 
     const items = list.map(x =>
       '<div class="pb-item' + (x.code === S.pullSelected ? ' active' : '') + '" data-code="' + E(x.code) + '">' +
-      '<div class="pb-item-top"><b>' + E(x.name) + '</b><span class="code">' + E(x.code) + '</span>' +
+      '<div class="pb-item-top"><b>' + sn(x.code, x.name) + '</b><span class="code">' + E(x.code) + '</span>' +
       '<span class="verdict ' + pbLevelClass(x.level) + '">' + E(x.level) + '</span></div>' +
       '<div class="pb-item-mid"><span>现价 <b>' + N(x.price) + '</b></span>' + PC(x.pct) + '<span>评分 <b>' + E(x.score) + '</b></span></div>' +
       '<div class="pb-item-bot"><span>涨停 ' + E(String(x.ztDate).slice(5)) + ' · 回调 ' + E(x.sinceZt) + ' 日</span>' + pbStatusTag(x.status) + '</div>' +
@@ -1369,7 +1442,7 @@
   function detailHead(x) {
     const ps = x.primarySupport || {}, pr = x.primaryResistance || {};
     return '<div class="card pb-detail-head">' +
-      '<div class="pb-dh-top"><span class="lb-name">' + E(x.name) + '</span><span class="lb-code">' + E(x.code) + '</span>' +
+      '<div class="pb-dh-top"><span class="lb-name">' + sn(x.code, x.name) + '</span><span class="lb-code">' + E(x.code) + '</span>' +
       tag(x.board || '—', '') + tag(x.industry || '无行业', 'purple') + pbStatusTag(x.status) +
       '<span class="lb-spacer"></span><span class="verdict ' + pbLevelClass(x.level) + '">' + E(x.level) + '</span></div>' +
       '<div class="pb-dh-reason">结论：' + E(x.reason) + '</div>' +
@@ -1854,7 +1927,7 @@
       const edge = dgEdgeOf(x);
       return '<div class="dg-item' + (x.code === S.dgSelected ? ' active' : '') + (edge ? ' dg-edge edge-' + E(edge.key) : '') +
         '" data-code="' + E(x.code) + '"' + (edge ? ' data-edge-corner="★ ' + E(edge.label) + ' ' + E(edge.rate) + '" style="' + dgEdgeStyle(edge) + '" title="' + E(dgEdgeTitle(edge)) + '"' : '') + '>' +
-      '<div class="dg-item-top"><b>' + E(x.name) + '</b><span class="code muted">' + E(x.code) + '</span>' +
+      '<div class="dg-item-top"><b>' + sn(x.code, x.name) + '</b><span class="code muted">' + E(x.code) + '</span>' +
       '<span class="tag ' + dgDtypeCls(x.dtype) + '">' + E(x.dtype) + '</span>' +
       '<span class="dg-score">' + E(x.score) + '</span></div>' +
       '<div class="dg-item-mid"><span title="连续连板 / 近 N 日累计涨停">' + E(x.boardLabel || (x.boards + ' 板')) + '</span><span class="tag ' + (x.roleRank === 1 ? 'red' : 'blue') + '">' + E(x.role) + '</span>' +
@@ -1866,7 +1939,7 @@
   }
 
   function dgDetailHead(x) {
-    return '<div class="card pad dg-detail-head"><div class="dg-dh-top"><h3>' + E(x.name) + ' <span class="muted" style="font-size:12px;font-weight:400">' + E(x.code) + '</span></h3>' +
+    return '<div class="card pad dg-detail-head"><div class="dg-dh-top"><h3>' + sn(x.code, x.name) + ' <span class="muted" style="font-size:12px;font-weight:400">' + E(x.code) + '</span></h3>' +
       tag(x.boardLabel || (x.boards + ' 板'), 'red') + tag(x.role, 'blue') + tag(x.dtype, dgDtypeCls(x.dtype)) + dgEdgeBadge(x) +
       tag('观察优先级 ' + x.score, 'purple') + '<span class="muted small">' + E(x.industry) + ' · ' + E(x.board) + '</span></div>' +
       '<div class="dg-dh-reason"><b>地位依据：</b>' + E(x.roleReason) + '</div>' +
@@ -2046,7 +2119,7 @@
           const pc = p.available
             ? dhPct(p.closePct) + '<div class="small muted">开 ' + dhPctSmall(p.openPct) + ' / 高 ' + dhPctSmall(p.highPct) + ' / 低 ' + dhPctSmall(p.lowPct) + '</div>'
             : '<span class="small muted">' + E(p.reason || '无数据') + '</span>';
-          return '<tr' + (edge ? ' class="dg-edge-row edge-' + E(edge.key) + '" style="' + dgEdgeStyle(edge) + '" title="' + E(dgEdgeTitle(edge)) + '"' : '') + '><td><b>' + E(o.name) + '</b>' + dgEdgeBadge(o) + '<div class="small muted">' + E(o.code) + (o.theme ? ' · ' + E(o.theme) : '') + '</div></td>' +
+          return '<tr' + (edge ? ' class="dg-edge-row edge-' + E(edge.key) + '" style="' + dgEdgeStyle(edge) + '" title="' + E(dgEdgeTitle(edge)) + '"' : '') + '><td><b>' + sn(o.code, o.name) + '</b>' + dgEdgeBadge(o) + '<div class="small muted">' + E(o.code) + (o.theme ? ' · ' + E(o.theme) : '') + '</div></td>' +
             '<td>' + E(o.role) + '</td><td>' + E(o.dtype) + '</td><td>' + E(o.boards) + ' 板</td><td>' + (o.nextBoards === null ? '—' : E(o.nextBoards) + ' 板') + '</td>' +
             '<td>' + tag(o.resultLabel, o.result === 'promoted' ? 'red' : o.result === 'broken' ? 'green' : o.result === 'pending' ? '' : 'blue') + '</td>' +
             '<td>' + pc + '</td><td>' + E(o.score) + '</td></tr>';
@@ -2076,7 +2149,7 @@
         const edge = dgEdgeOf(x);
         return '<div class="dg-item' + (x.code === S.dgHistSelected ? ' active' : '') + (edge ? ' dg-edge edge-' + E(edge.key) : '') +
           '" data-code="' + E(x.code) + '"' + (edge ? ' data-edge-corner="★ ' + E(edge.label) + ' ' + E(edge.rate) + '" style="' + dgEdgeStyle(edge) + '" title="' + E(dgEdgeTitle(edge)) + '"' : '') + '>' +
-        '<div class="dg-item-top"><b>' + E(x.name) + '</b><span class="code muted">' + E(x.code) + '</span>' +
+        '<div class="dg-item-top"><b>' + sn(x.code, x.name) + '</b><span class="code muted">' + E(x.code) + '</span>' +
         '<span class="tag ' + dgDtypeCls(x.dtype) + '">' + E(x.dtype) + '</span><span class="dg-score">' + E(x.score) + '</span></div>' +
         '<div class="dg-item-mid"><span>' + E(x.boardLabel || (x.boards + ' 板')) + '</span>' +
         '<span class="tag ' + (x.roleRank === 1 ? 'red' : 'blue') + '">' + E(x.role) + '</span><span class="muted">' + E(x.industry) + '</span></div>' +
@@ -2615,7 +2688,7 @@
     const cRows = cands.map((x, i) => {
       const p = x.plan || {};
       return '<tr><td>' + (i + 1) + '</td>' +
-        '<td class="left"><span class="code">' + E(x.code) + '</span> <span class="nm">' + E(x.name) + '</span>' +
+        '<td class="left"><span class="code">' + E(x.code) + '</span> ' + sn(x.code, x.name, 'nm') +
         '<div class="small muted">' + E(x.boardLabel || (x.boards + ' 板')) + ' · ' + E(x.industry || '—') +
         (x.theme ? ' · ' + E(x.theme.stage) : '') + '</div></td>' +
         '<td>' + N(p.base) + '</td>' +
@@ -2669,6 +2742,570 @@
       }]
     };
     safeChart('enMethodChart', opt, items);
+  }
+
+  /* ═══════════════ 个股K线弹窗：日K / 周K / 成交量 / 筹码峰 ═══════════════ */
+  function openStockChart(code) {
+    const c = String(code || '').replace(/\D/g, '').slice(0, 6);
+    if (!/^\d{6}$/.test(c)) return;
+    S.chart = { open: true, code: c, name: c, period: 'day', data: null, loading: true, error: null, view: null, geom: null, lockIdx: null };
+    $('stockModal').style.display = 'flex';
+    $('smName').textContent = c;
+    $('smCode').textContent = '';
+    $('smQuote').innerHTML = '';
+    $('smSource').textContent = '载入中…';
+    $('smBody').innerHTML = '<div class="empty">正在拉取 ' + E(c) + ' 的日K / 周K / 筹码分布…</div>';
+    $('smFoot').innerHTML = '';
+    document.body.style.overflow = 'hidden';
+    fetch('/api/stock/chart?code=' + encodeURIComponent(c))
+      .then(r => r.json())
+      .then(j => {
+        if (S.chart.code !== c) return; // 期间切换了标的
+        if (j.error) throw new Error(j.error);
+        S.chart.data = j;
+        S.chart.name = j.name || c;
+        S.chart.loading = false;
+        $('smName').textContent = j.name || c;
+        $('smCode').textContent = E(c);
+        renderStockChart();
+      })
+      .catch(e => {
+        S.chart.loading = false;
+        S.chart.error = isConnError(e) ? SERVICE_HINT : String(e && e.message || e);
+        $('smSource').textContent = '加载失败';
+        $('smBody').innerHTML = '<div class="empty">' + E(S.chart.error) + '</div>';
+      });
+  }
+
+  function closeStockChart() {
+    S.chart.open = false;
+    const m = $('stockModal'); if (m) m.style.display = 'none';
+    document.body.style.overflow = '';
+  }
+
+  /* K线配色设置面板：5 类颜色 + 恢复默认 + 口径说明 */
+  function smColorPanelHtml() {
+    const items = KL_COLOR_META.map(m =>
+      '<label class="sm-clr-item"><span>' + E(m.label) + '</span>' +
+      '<input type="color" data-klcolor="' + m.k + '" value="' + E(S.klColors[m.k]) + '" title="点击选择颜色"></label>'
+    ).join('');
+    const rateNote = '涨停/跌停按收盘价相对前收的涨跌幅判定：主板 ±10%、创业板/科创板 ±20%、北交所 ±30%、ST ±5%（容差 0.3%）；' +
+      '炸板为盘中最高/最低触及涨跌停价但收盘未封住。周K无涨跌停制度，不标记。识别为近似推算，仅供复盘参考。';
+    return '<div class="sm-color-panel" id="smColorPanel">' +
+      '<div class="sm-clr-head"><b>🎨 K线配色设置</b><span class="small muted">改动即时生效并自动保存</span>' +
+      '<button type="button" data-kact="colors" class="sm-clr-close" title="收起">收起</button></div>' +
+      '<div class="sm-clr-grid">' + items + '</div>' +
+      '<div class="sm-clr-foot"><button type="button" class="sm-clr-reset" id="smClrReset">恢复默认配色</button>' +
+      '<span class="small muted">' + E(rateNote) + '</span></div></div>';
+  }
+
+  function renderStockChart() {
+    const j = S.chart.data; if (!j) return;
+    const per = S.chart.period;
+    const series = j[per] || {};
+    const chip = (j.chip || {})[per] || null;
+    // 顶部快照
+    const q = j.quote || {};
+    const pc = q.pct;
+    const qcls = pc > 0 ? 'up' : pc < 0 ? 'down' : '';
+    $('smQuote').innerHTML =
+      '<span class="sm-price ' + qcls + '">' + N(q.price) + '</span>' +
+      '<span class="sm-pct ' + qcls + '">' + (pc === null || pc === undefined ? '—' : (pc > 0 ? '+' : '') + N(pc) + '%') + '</span>' +
+      (q.floatCap ? '<span class="sm-meta">流通 ' + E(CAP(q.floatCap)) + '</span>' : '') +
+      (q.turnover !== null && q.turnover !== undefined ? '<span class="sm-meta">换手 ' + N(q.turnover, 1) + '%</span>' : '');
+    // tab 高亮
+    [...document.querySelectorAll('.sm-tab')].forEach(b => b.classList.toggle('active', b.dataset.period === per));
+    const adj = series.adjusted === false ? '不复权' : (series.adjusted ? '前复权' : '');
+    $('smSource').textContent = (per === 'day' ? '日K' : '周K') + ' · ' + E(series.source || '来源不可用') + (adj ? ' · ' + adj : '') + (series.asOf ? ' · 截至 ' + E(String(series.asOf).slice(0, 10)) : '');
+    // 主体：左K线 + 右筹码峰（共享同一价格Y轴，水平网格线对齐）
+    const bars = series.rows || [];
+    if (!S.chart.view || S.chart.view.total !== bars.length) {
+      const def = Math.min(60, bars.length);
+      S.chart.view = { total: bars.length, start: Math.max(0, bars.length - def), count: def };
+    }
+    // 深链 ?zoom=20&day=20261110：指定缩放根数并锁定到某一天
+    if (S.chart._initZoom) {
+      const z = Math.min(S.chart._initZoom, bars.length);
+      S.chart.view.count = z;
+      S.chart.view.start = Math.max(0, Math.min(S.chart.view.start, bars.length - z));
+      S.chart._initZoom = 0;
+    }
+    if (S.chart._initLock) {
+      const d = S.chart._initLock;
+      const idx = bars.findIndex(b => String(b.date).replace(/\D/g, '') === d);
+      if (idx >= 0) {
+        S.chart.lockIdx = idx;
+        if (idx < S.chart.view.start || idx >= S.chart.view.start + S.chart.view.count)
+          S.chart.view.start = Math.max(0, Math.min(idx - Math.floor(S.chart.view.count / 2), bars.length - S.chart.view.count));
+      }
+      S.chart._initLock = null;
+    }
+    const range = smSharedRange(bars, chip, S.chart.view);
+    S.chart.range = range;
+    const ksvg = smKlineSvg(bars, per, range, S.chart.view);
+    const csvg = chip ? smChipSvg(chip, range) : '<div class="empty">筹码峰数据不足</div>';
+    $('smBody').innerHTML =
+      '<div class="sm-hd-layout">' +
+        '<div class="sm-chart-block sm-kline-block"><div class="sm-block-head"><h4>' + (per === 'day' ? '日K' : '周K') + '线图（蜡烛 + 成交量 + 均线）</h4>' +
+        '<div class="sm-k-tools">' +
+          '<button type="button" data-kact="out" title="缩小（显示更多K线）">−</button>' +
+          '<button type="button" data-kact="in" title="放大（显示更少K线）">＋</button>' +
+          '<button type="button" data-kact="left" title="向前平移">◀</button>' +
+          '<button type="button" data-kact="right" title="向后平移">▶</button>' +
+          '<button type="button" data-kact="reset" title="重置视图">重置</button>' +
+          '<button type="button" data-kact="colors" class="sm-color-btn' + (S.klPanelOpen ? ' active' : '') + '" title="自定义涨跌停/炸板配色">🎨 配色</button>' +
+          '<span class="sm-view-info" id="smViewInfo"></span>' +
+        '</div></div>' +
+        (S.klPanelOpen ? smColorPanelHtml() : '') +
+        '<div class="sm-svg-wrap" id="smSvgWrap">' + ksvg +
+          '<div class="sm-hover-panel" id="smHoverPanel" style="display:none"></div>' +
+        '</div>' +
+        '<div class="sm-k-hint">滚轮缩放 · 按住拖动平移 · 移动鼠标看某日数据 · 单击锁定 / 双击重置</div></div>' +
+        '<div class="sm-chart-block sm-chip-block"><div class="sm-block-head"><h4>筹码峰分布</h4>' +
+        '<span class="small muted">模型估算 · 与左图价格轴对齐</span></div>' +
+        '<div class="sm-chip-body">' + csvg + (chip ? '<div class="sm-chip-stats">' + smChipStatsHtml(chip) + '</div>' : '') + '</div></div>' +
+      '</div>';
+    smUpdateViewInfo();
+    // 底部方法论与免责
+    const m = j.method || {};
+    $('smFoot').innerHTML =
+      '<div class="note-box">' + E(m.day || '') + ' ' + E(m.week || '') + ' ' + E(m.chip || '') + '</div>' +
+      '<div class="small muted" style="margin-top:6px">' + E((j.meta || {}).disclaimer || '') + '</div>';
+    if (chip) bindChipHover();
+    if (bars.length >= 6) bindKlineInteractions();
+    // 配色面板：取色器即时改色、恢复默认、收起
+    const cp = $('smColorPanel');
+    if (cp) {
+      cp.querySelectorAll('[data-klcolor]').forEach(inp => {
+        inp.addEventListener('input', e => {
+          S.klColors[e.target.dataset.klcolor] = e.target.value;
+          klSaveColors();
+          smRedrawKline(); // 只重绘K线SVG，面板与状态保持不变
+        });
+      });
+      const rst = $('smClrReset');
+      if (rst) rst.onclick = () => {
+        S.klColors = Object.assign({}, KL_COLOR_DEFAULT);
+        klSaveColors();
+        renderStockChart();
+      };
+      const cls = cp.querySelector('.sm-clr-close');
+      if (cls) cls.onclick = () => { S.klPanelOpen = false; renderStockChart(); };
+    }
+    // 恢复深链/重绘后的锁定态十字光标与数据面板
+    if (S.chart.lockIdx !== null && S.chart.geom) {
+      const g = S.chart.geom, jj = S.chart.lockIdx - g.start;
+      if (jj >= 0 && jj < g.n) smShowCross(jj, null, null, null, true);
+      else S.chart.lockIdx = null;
+    }
+  }
+
+  /* K线与筹码峰共享的价格范围：基于「可见区间」自适应，避免放大后K线被全量高价压扁。
+     传入 view 时只取可见窗口的高低点；无 view 时用全量。两图共用同一结果，保证水平对齐。 */
+  function smSharedRange(bars, chip, view) {
+    let src = bars || [];
+    if (view && src.length) {
+      const start = Math.max(0, Math.min(view.start, src.length - 1));
+      const count = Math.max(6, Math.min(view.count, src.length - start));
+      src = src.slice(start, Math.min(src.length, start + count));
+    }
+    let lo = [], hi = [];
+    if (src.length) { lo = src.map(b => b.low); hi = src.map(b => b.high); }
+    // 无K线数据时才回退到筹码全量范围
+    if (!lo.length && chip) {
+      if (chip.range) { lo.push(chip.range[0]); hi.push(chip.range[1]); }
+      if (chip.bins && chip.bins.length) { lo.push(...chip.bins.map(b => b.price)); hi.push(...chip.bins.map(b => b.price)); }
+      if (chip.price !== null && chip.price !== undefined) { lo.push(chip.price); hi.push(chip.price); }
+    }
+    if (!lo.length) return { min: 0, max: 1 };
+    let minP = Math.min(...lo), maxP = Math.max(...hi);
+    const pad = (maxP - minP) * 0.06 || maxP * 0.02;
+    return { min: minP - pad, max: maxP + pad };
+  }
+
+  /* 零依赖 SVG K线：蜡烛 + 成交量 + MA5/10/20 + 十字光标提示（title） */
+  function smKlineSvg(bars, per, range, view) {
+    if (!bars || bars.length < 6) return '<div class="empty">该周期K线数据不足（需 ≥6 根），无法绘制</div>';
+    const W = 1110, H = 520, L = 62, R = 24;
+    const PT = 24, PB = 430, VT = 448, VB = 500, DY = 516;
+    const PW = W - L - R;
+    const minP = range.min, maxP = range.max;
+    const Y = p => PB - (p - minP) / (maxP - minP) * (PB - PT);
+    const total = bars.length;
+    const vv = view || { start: 0, count: total };
+    const start = Math.max(0, Math.min(vv.start, total - 1));
+    const count = Math.max(6, Math.min(vv.count, total - start));
+    const end = Math.min(total, start + count);
+    const vis = bars.slice(start, end);
+    const n = vis.length;
+    const cw = PW / n, bw = Math.max(1.6, Math.min(22, cw * 0.62));
+    const CX = j => L + cw * (j + 0.5);
+    const maxV = Math.max(1, ...vis.map(b => b.volume || 0));
+    // 暴露几何信息供交互（缩放/平移/十字光标）做坐标换算
+    S.chart.geom = { W, H, L, PT, PB, VT, VB, PW, cw, bw, n, start, count, total, minP, maxP };
+    const a = [];
+    a.push('<svg class="sm-kline" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" aria-label="' + (per === 'day' ? '日' : '周') + 'K线图">');
+    a.push('<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="#fff"/>');
+    for (let i = 0; i <= 4; i++) {
+      const p = minP + (maxP - minP) * i / 4, y = Y(p);
+      a.push('<line x1="' + L + '" y1="' + y.toFixed(1) + '" x2="' + (L + PW) + '" y2="' + y.toFixed(1) + '" stroke="#eef2f7"/>');
+      a.push('<text x="' + (L - 8) + '" y="' + (y + 4).toFixed(1) + '" text-anchor="end" font-size="11" fill="#8593a3">' + p.toFixed(2) + '</text>');
+    }
+    const KC = S.klColors;
+    const kindLabel = { limitUp: '涨停', limitDown: '跌停', broken: '炸板' };
+    const kindShown = { limitUp: 0, limitDown: 0, broken: 0 };
+    vis.forEach((b, j) => {
+      const gi = start + j, cx = CX(j);
+      const kind = per === 'day' ? klBarKind(bars, gi, S.chart.code, S.chart.name) : null;
+      if (kind) kindShown[kind]++;
+      const col = kind ? KC[kind] : (b.close >= b.open ? KC.up : KC.down);
+      const yo = Y(b.open), yc = Y(b.close), yh = Y(b.high), yl = Y(b.low);
+      const tip = E(b.date) + (kind ? ' 【' + kindLabel[kind] + '】' : '') + ' 开 ' + N(b.open) + ' 高 ' + N(b.high) + ' 低 ' + N(b.low) + ' 收 ' + N(b.close) + ' 量 ' + AMT(b.volume);
+      a.push('<g><title>' + tip + '</title>');
+      a.push('<line x1="' + cx.toFixed(1) + '" y1="' + yh.toFixed(1) + '" x2="' + cx.toFixed(1) + '" y2="' + yl.toFixed(1) + '" stroke="' + col + '" stroke-width="1"/>');
+      a.push('<rect x="' + (cx - bw / 2).toFixed(1) + '" y="' + Math.min(yo, yc).toFixed(1) + '" width="' + bw.toFixed(1) +
+        '" height="' + Math.max(1.4, Math.abs(yo - yc)).toFixed(1) + '" fill="' + col + '"/>');
+      // 涨停/跌停/炸板小圆点标记（收盘端），仅 K线足够宽时绘制避免糊成一团
+      if (kind && bw >= 4) {
+        const my = kind === 'limitDown' ? yc + 7 : yc - 7;
+        a.push('<circle cx="' + cx.toFixed(1) + '" cy="' + my.toFixed(1) + '" r="2.4" fill="' + col + '" stroke="#fff" stroke-width="0.8"/>');
+      }
+      a.push('</g>');
+    });
+    [['ma5', 5, '#e8912a'], ['ma10', 10, '#2f6fd0'], ['ma20', 20, '#6d4bd6']].forEach(pair => {
+      const pts = [];
+      for (let j = 0; j < n; j++) {
+        const gi = start + j;
+        if (gi >= pair[1] - 1) {
+          let s = 0; for (let k = 0; k < pair[1]; k++) s += bars[gi - k].close;
+          pts.push(CX(j).toFixed(1) + ',' + Y(s / pair[1]).toFixed(1));
+        }
+      }
+      if (pts.length > 1) a.push('<polyline points="' + pts.join(' ') + '" fill="none" stroke="' + pair[2] + '" stroke-width="1.3" opacity="0.85"/>');
+    });
+    // 成交量
+    a.push('<line x1="' + L + '" y1="' + VT + '" x2="' + (L + PW) + '" y2="' + VT + '" stroke="#eef2f7"/>');
+    a.push('<text x="' + (L - 8) + '" y="' + (VT + 12) + '" text-anchor="end" font-size="10" fill="#8593a3">量</text>');
+    vis.forEach((b, j) => {
+      const gi = start + j;
+      const kind = per === 'day' ? klBarKind(bars, gi, S.chart.code, S.chart.name) : null;
+      const h = (b.volume || 0) / maxV * (VB - VT - 4);
+      const col = kind ? KC[kind] : (b.close >= b.open ? KC.up : KC.down);
+      a.push('<rect x="' + (CX(j) - bw / 2).toFixed(1) + '" y="' + (VB - h).toFixed(1) + '" width="' + bw.toFixed(1) +
+        '" height="' + Math.max(1, h).toFixed(1) + '" fill="' + col + '" opacity="0.5"><title>' + E(b.date) + ' 成交量 ' + AMT(b.volume) + '</title></rect>');
+    });
+    const step = Math.max(1, Math.ceil(n / 7));
+    vis.forEach((b, j) => {
+      if (j % step === 0 || j === n - 1)
+        a.push('<text x="' + CX(j).toFixed(1) + '" y="' + DY + '" text-anchor="middle" font-size="10.5" fill="#8593a3">' + E(String(b.date).slice(5)) + '</text>');
+    });
+    const legend = [[KC.up, '阳线'], [KC.down, '阴线']];
+    if (per === 'day') {
+      if (kindShown.limitUp) legend.push([KC.limitUp, '涨停 ' + kindShown.limitUp]);
+      if (kindShown.limitDown) legend.push([KC.limitDown, '跌停 ' + kindShown.limitDown]);
+      if (kindShown.broken) legend.push([KC.broken, '炸板 ' + kindShown.broken]);
+    }
+    legend.push(['#e8912a', 'MA5'], ['#2f6fd0', 'MA10'], ['#6d4bd6', 'MA20']);
+    let lx = L;
+    legend.forEach(pair => {
+      a.push('<rect x="' + lx + '" y="10" width="10" height="10" rx="2" fill="' + pair[0] + '"/>');
+      a.push('<text x="' + (lx + 14) + '" y="20" font-size="11" fill="#6b7a8c">' + E(pair[1]) + '</text>');
+      lx += 92;
+    });
+    // 十字光标（交互时由 JS 显示/定位），置于最上层
+    a.push('<g id="smCross" style="display:none">');
+    a.push('<line id="smCrossV" x1="0" y1="' + PT + '" x2="0" y2="' + VB + '" stroke="#7c8a9a" stroke-width="1" stroke-dasharray="4 3"/>');
+    a.push('<line id="smCrossH" x1="' + L + '" y1="0" x2="' + (L + PW) + '" y2="0" stroke="#7c8a9a" stroke-width="1" stroke-dasharray="4 3"/>');
+    a.push('<circle id="smCrossDot" r="4" fill="#fff" stroke="#1c2733" stroke-width="1.5"/>');
+    a.push('</g>');
+    a.push('</svg>');
+    return a.join('');
+  }
+
+  /* 筹码峰：横向柱状，纵轴价格与K线对齐；获利(现价下方)红、套牢绿 */
+  function smChipSvg(chip, range) {
+    const bins = chip.bins || [];
+    if (!bins.length) return '<div class="empty">无筹码分布数据</div>';
+    // 与K线同Y轴：PT=24 PB=430，价格标签放右侧，筹码条自右向左延伸
+    const W = 300, H = 520, L = 10, R = 54;
+    const PT = 24, PB = 430;
+    const PW = W - L - R;
+    const minP = range.min, maxP = range.max;
+    const Y = p => PB - (p - minP) / (maxP - minP) * (PB - PT);
+    // 只显示落在可见价格区间的筹码；放大后按可见 bins 重新归一化，保持筹码峰饱满
+    const visBins = bins.filter(b => b.price >= minP && b.price <= maxP);
+    const maxPct = Math.max(1, ...(visBins.length ? visBins : bins).map(b => b.pct));
+    // 每个 bin 的像素高度由价格跨度决定（与K线价格轴同步缩放）
+    const step = bins.length > 1 ? Math.abs(bins[1].price - bins[0].price) : (maxP - minP) / bins.length;
+    const bh = Math.max(1, (PB - PT) * step / (maxP - minP));
+    const price = chip.price;
+    const a = [];
+    a.push('<svg class="sm-chip" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" aria-label="筹码峰分布">');
+    a.push('<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="#fff"/>');
+    for (let i = 0; i <= 4; i++) {
+      const p = minP + (maxP - minP) * i / 4, y = Y(p);
+      a.push('<line x1="' + L + '" y1="' + y.toFixed(1) + '" x2="' + (L + PW) + '" y2="' + y.toFixed(1) + '" stroke="#eef2f7"/>');
+      a.push('<text x="' + (L + PW + 6) + '" y="' + (y + 4).toFixed(1) + '" text-anchor="start" font-size="10.5" fill="#8593a3">' + p.toFixed(2) + '</text>');
+    }
+    visBins.forEach((b, i) => {
+      const y = Y(b.price) - bh / 2;
+      if (y + bh < PT || y > PB) return; // 超出绘图区不画
+      const w = b.pct / maxPct * PW;
+      const col = (price !== null && b.price <= price) ? '#d92b2b' : '#0f9960';
+      a.push('<rect class="sm-chip-bin" x="' + (L + PW - w).toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + Math.max(0.5, w).toFixed(1) + '" height="' + Math.max(1, bh - 0.4).toFixed(1) +
+        '" fill="' + col + '" opacity="0.76"><title>' + N(b.price) + ' 元 · 筹码 ' + N(b.pct, 2) + '%</title></rect>');
+    });
+    // 获利/套牢分界：轻量红色虚线 + 右侧紧凑圆角价格胶囊（不贯穿全宽）
+    if (price !== null && price >= minP && price <= maxP) {
+      const yp = Y(price);
+      a.push('<line x1="' + L + '" y1="' + yp.toFixed(1) + '" x2="' + (L + PW) + '" y2="' + yp.toFixed(1) +
+        '" stroke="#d92b2b" stroke-width="1.1" stroke-dasharray="5 4" opacity="0.72"/>');
+      const capW = 64, capH = 18, capX = L + PW - capW, capY = yp - capH / 2;
+      // 白色描边作分隔，避免胶囊与筹码条颜色粘连
+      a.push('<rect x="' + capX.toFixed(1) + '" y="' + capY.toFixed(1) + '" width="' + capW + '" height="' + capH +
+        '" rx="9" fill="#d92b2b" stroke="#fff" stroke-width="1.2"/>');
+      a.push('<text x="' + (capX + capW / 2).toFixed(1) + '" y="' + (yp + 3.8).toFixed(1) +
+        '" text-anchor="middle" font-size="10.5" fill="#fff" font-weight="700">现价 ' + N(price) + '</text>');
+    }
+    // 峰值标注（只标落在可见价格区间的峰）
+    (chip.peaks || []).forEach((p, idx) => {
+      if (p.price < minP || p.price > maxP) return;
+      const y = Y(p.price);
+      a.push('<line x1="' + L + '" y1="' + y.toFixed(1) + '" x2="' + (L + PW) + '" y2="' + y.toFixed(1) + '" stroke="#e8912a" stroke-width="1" stroke-dasharray="3 3" opacity="0.85"/>');
+      if (idx < 2) a.push('<text x="' + (L + 2) + '" y="' + (y - 4).toFixed(1) + '" font-size="10" fill="#e8912a" font-weight="700">峰' + N(p.price) + '</text>');
+    });
+    a.push('<text x="' + L + '" y="478" font-size="11" fill="#d92b2b" font-weight="600">■ 获利盘 ' + N(chip.profitRatio, 1) + '%</text>');
+    a.push('<text x="' + (L + 150) + '" y="478" font-size="11" fill="#0f9960" font-weight="600">■ 套牢 ' + N(chip.trappedRatio, 1) + '%</text>');
+    a.push('</svg>');
+    return a.join('');
+  }
+
+  function smChipStatsHtml(chip) {
+    const c = chip.concentration || {};
+    const dev = chip.costDeviation;
+    const items = [
+      ['获利比例', '<span class="up">' + N(chip.profitRatio, 1) + '%</span>'],
+      ['套牢比例', '<span class="down">' + N(chip.trappedRatio, 1) + '%</span>'],
+      ['90%集中度', N(c.c90) + '<small class="muted"> ' + E(c.label90 || '') + '</small>'],
+      ['70%集中度', N(c.c70) + '<small class="muted"> ' + E(c.label70 || '') + '</small>'],
+      ['平均成本', N(chip.costAvg) + ' 元'],
+      ['成本偏离', (dev === null || dev === undefined ? '—' : (dev > 0 ? '+' : '') + N(dev, 1) + '%')],
+      ['70%成本区', N(chip.cost70[0]) + '–' + N(chip.cost70[1])],
+      ['90%成本区', N(chip.cost90[0]) + '–' + N(chip.cost90[1])],
+      ['筹码峰', (chip.peaks || []).slice(0, 2).map(p => N(p.price)).join('/') || '—']
+    ];
+    return items.map(x => '<div class="sm-stat"><span class="k">' + x[0] + '</span><span class="v">' + x[1] + '</span></div>').join('');
+  }
+
+  function bindChipHover() {
+    // title 原生提示已够用，这里预留：点击筹码区间不做跳转，避免误触
+  }
+
+  /* ─────────── K线交互：缩放 / 平移 / 十字光标 / 单日数据 ─────────── */
+  const smClamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+  function smUpdateViewInfo() {
+    const el = $('smViewInfo'), v = S.chart.view;
+    if (!el || !v) return;
+    el.textContent = '显示 ' + (v.start + 1) + '–' + Math.min(v.total, v.start + v.count) + ' / ' + v.total + ' 根';
+  }
+
+  function smViewReset() {
+    const total = S.chart.geom ? S.chart.geom.total : 0;
+    const def = Math.min(60, total || 60);
+    S.chart.view = { total: total, start: Math.max(0, total - def), count: def };
+    S.chart.lockIdx = null;
+    smRedrawKline();
+  }
+
+  /* 重绘 K线 + 筹码峰：价格轴随可见区间自适应，两图共享同一 range 保持对齐 */
+  function smRedrawKline() {
+    const j = S.chart.data; if (!j) return;
+    const per = S.chart.period, bars = j[per].rows || [];
+    const chip = (j.chip || {})[per] || null;
+    const range = smSharedRange(bars, chip, S.chart.view);
+    S.chart.range = range;
+    const svgHtml = smKlineSvg(bars, per, range, S.chart.view);
+    const wrap = $('smSvgWrap'); if (!wrap) return;
+    const old = wrap.querySelector('svg.sm-kline');
+    if (old) old.outerHTML = svgHtml;
+    else wrap.insertAdjacentHTML('afterbegin', svgHtml);
+    // 筹码峰同步重绘（价格轴已随可见区间变化）
+    if (chip) {
+      const cbody = document.querySelector('.sm-chip-body');
+      const oldChip = cbody && cbody.querySelector('svg.sm-chip');
+      if (oldChip) oldChip.outerHTML = smChipSvg(chip, range);
+    }
+    smUpdateViewInfo();
+    // 恢复锁定态
+    const g = S.chart.geom;
+    if (S.chart.lockIdx !== null && g) {
+      const jj = S.chart.lockIdx - g.start;
+      if (jj >= 0 && jj < g.n) smShowCross(jj, null, null, null, true);
+      else { S.chart.lockIdx = null; smHideCross(); }
+    } else smHideCross();
+  }
+
+  /* 缩放：factor<1 放大（更少K线），>1 缩小；anchorFrac 为鼠标在绘图区的横向比例 */
+  function smZoom(factor, anchorFrac) {
+    const v = S.chart.view, total = v.total;
+    const aF = smClamp(anchorFrac === undefined ? 1 : anchorFrac, 0, 1);
+    const newCount = Math.round(smClamp(v.count * factor, 6, total));
+    if (newCount === v.count) return;
+    const anchorGi = v.start + aF * v.count;
+    v.start = Math.round(smClamp(anchorGi - aF * newCount, 0, total - newCount));
+    v.count = newCount;
+    smRedrawKline();
+  }
+
+  function smPan(delta) {
+    const v = S.chart.view;
+    const ns = Math.round(smClamp(v.start + delta, 0, v.total - v.count));
+    if (ns === v.start) return;
+    v.start = ns;
+    smRedrawKline();
+  }
+
+  /* 鼠标/屏幕坐标 → SVG viewBox 坐标 + 相对 wrap 的像素坐标 */
+  function smEvtPos(e) {
+    const svg = document.querySelector('#smSvgWrap svg.sm-kline'), wrap = $('smSvgWrap');
+    if (!svg || !wrap || !S.chart.geom) return null;
+    const r = svg.getBoundingClientRect(), wr = wrap.getBoundingClientRect(), g = S.chart.geom;
+    if (!r.width || !r.height) return null;
+    return {
+      vx: (e.clientX - r.left) / r.width * g.W,
+      vy: (e.clientY - r.top) / r.height * g.H,
+      rx: e.clientX - wr.left, ry: e.clientY - wr.top,
+      svgRect: r, wrapRect: wr
+    };
+  }
+
+  /* 十字光标 + 单日数据面板。vy 为空时用该日收盘价定位水平线 */
+  function smShowCross(j, vy, rx, ry, locked) {
+    const g = S.chart.geom, wrap = $('smSvgWrap'), panel = $('smHoverPanel');
+    if (!g || !wrap) return;
+    const rows = (S.chart.data[S.chart.period] || {}).rows || [];
+    const gi = g.start + j, bar = rows[gi];
+    if (!bar) return;
+    const cx = g.L + g.cw * (j + 0.5);
+    const yy = vy === null || vy === undefined ? g.PB - (bar.close - g.minP) / (g.maxP - g.minP) * (g.PB - g.PT) : vy;
+    const cross = document.getElementById('smCross');
+    if (cross) {
+      cross.style.display = 'inline';
+      const vline = document.getElementById('smCrossV'), hline = document.getElementById('smCrossH'), dot = document.getElementById('smCrossDot');
+      if (vline) { vline.setAttribute('x1', cx.toFixed(1)); vline.setAttribute('x2', cx.toFixed(1)); }
+      if (hline) { hline.setAttribute('y1', smClamp(yy, g.PT, g.PB).toFixed(1)); hline.setAttribute('y2', smClamp(yy, g.PT, g.PB).toFixed(1)); }
+      if (dot) { dot.setAttribute('cx', cx.toFixed(1)); dot.setAttribute('cy', smClamp(yy, g.PT, g.PB).toFixed(1)); }
+    }
+    if (!panel) return;
+    panel.innerHTML = smHoverDataHtml(bar, gi, !!locked);
+    panel.style.display = 'block';
+    // 优先跟随鼠标；缩放恢复等无鼠标坐标时用十字交点定位
+    let ax = rx, ay = ry;
+    if (ax === null || ax === undefined || ay === null || ay === undefined) {
+      const svgEl = wrap.querySelector('svg.sm-kline');
+      if (svgEl) {
+        const sr = svgEl.getBoundingClientRect(), wr = wrap.getBoundingClientRect();
+        ax = (sr.left - wr.left) + cx / g.W * sr.width;
+        ay = (sr.top - wr.top) + smClamp(yy, g.PT, g.PB) / g.H * sr.height;
+      } else { ax = 20; ay = 20; }
+    }
+    const pw = panel.offsetWidth || 210, ph = panel.offsetHeight || 120;
+    let left = ax + 14; if (left + pw > wrap.clientWidth - 4) left = ax - pw - 14;
+    if (left < 2) left = 2;
+    let top = ay + 12; if (top + ph > wrap.clientHeight - 4) top = ay - ph - 12;
+    if (top < 2) top = 2;
+    panel.style.left = left + 'px';
+    panel.style.top = top + 'px';
+  }
+
+  function smHideCross() {
+    const cross = document.getElementById('smCross'), panel = $('smHoverPanel');
+    if (cross) cross.style.display = 'none';
+    if (panel) { panel.style.display = 'none'; panel.innerHTML = ''; }
+  }
+
+  function smHoverDataHtml(bar, gi, locked) {
+    const rows = (S.chart.data[S.chart.period] || {}).rows || [];
+    const prev = gi > 0 ? rows[gi - 1] : null;
+    const pct = prev && prev.close ? (bar.close / prev.close - 1) * 100 : null;
+    const cls = pct > 0 ? 'up' : pct < 0 ? 'down' : '';
+    const ma = n => { if (gi < n - 1) return '—'; let s = 0; for (let k = 0; k < n; k++) s += rows[gi - k].close; return N(s / n); };
+    const row = (k, v, c) => '<div class="sm-hover-row"><span>' + k + '</span><b class="' + (c || '') + '">' + v + '</b></div>';
+    const kind = S.chart.period === 'day' ? klBarKind(rows, gi, S.chart.code, S.chart.name) : null;
+    const kindChip = kind ? '<span class="sm-hover-kind kind-' + kind + '">' + { limitUp: '涨停', limitDown: '跌停', broken: '炸板' }[kind] + '</span>' : '';
+    return '<div class="sm-hover-head"><b>' + E(bar.date) + '</b>' + kindChip + (locked ? '<span class="sm-lock-flag">已锁定 · 再点取消</span>' : '') + '</div>' +
+      '<div class="sm-hover-grid">' +
+        row('开盘', N(bar.open)) + row('最高', N(bar.high), 'up') +
+        row('最低', N(bar.low), 'down') + row('收盘', N(bar.close), cls) +
+        row('涨跌幅', pct === null ? '—' : (pct > 0 ? '+' : '') + N(pct) + '%', cls) + row('成交量', AMT(bar.volume)) +
+        row('MA5', ma(5)) + row('MA10', ma(10)) + row('MA20', ma(20)) +
+      '</div>';
+  }
+
+  function bindKlineInteractions() {
+    const wrap = $('smSvgWrap'); if (!wrap) return;
+    const block = wrap.closest('.sm-kline-block'), tools = block && block.querySelector('.sm-k-tools');
+    if (tools) tools.onclick = e => {
+      const b = e.target.closest('[data-kact]'); if (!b) return;
+      e.preventDefault(); e.stopPropagation();
+      const step = Math.max(1, Math.round(S.chart.view.count * 0.3));
+      if (b.dataset.kact === 'in') smZoom(0.8);
+      else if (b.dataset.kact === 'out') smZoom(1.25);
+      else if (b.dataset.kact === 'left') smPan(-step);
+      else if (b.dataset.kact === 'right') smPan(step);
+      else if (b.dataset.kact === 'reset') smViewReset();
+      else if (b.dataset.kact === 'colors') { S.klPanelOpen = !S.klPanelOpen; renderStockChart(); }
+    };
+    if (S.chart.upHandler) document.removeEventListener('mouseup', S.chart.upHandler);
+    let drag = null, raf = 0;
+    S.chart.upHandler = () => {
+      if (drag) { if (drag.moved) S.chart._justDragged = true; drag = null; wrap.classList.remove('dragging'); }
+    };
+    document.addEventListener('mouseup', S.chart.upHandler);
+
+    wrap.addEventListener('wheel', e => {
+      e.preventDefault();
+      const p = smEvtPos(e); if (!p) return;
+      const g = S.chart.geom, aF = (p.vx - g.L) / g.PW;
+      smZoom(e.deltaY < 0 ? 0.82 : 1.22, aF);
+      const pos = smEvtPos(e);
+      if (pos) { const j = Math.floor((pos.vx - S.chart.geom.L) / S.chart.geom.cw); if (j >= 0 && j < S.chart.geom.n) smShowCross(j, pos.vy, pos.rx, pos.ry, S.chart.lockIdx !== null); }
+    }, { passive: false });
+
+    wrap.addEventListener('mousemove', e => {
+      const p = smEvtPos(e); if (!p) return;
+      if (drag) {
+        const target = Math.round(smClamp(drag.start - Math.round((p.vx - drag.vx) / drag.g.cw), 0, drag.g.total - S.chart.view.count));
+        if (Math.abs(p.vx - drag.vx) > 3) drag.moved = true;
+        if (target !== S.chart.view.start) {
+          S.chart.view.start = target;
+          if (!raf) raf = requestAnimationFrame(() => { raf = 0; smRedrawKline(); });
+        }
+        return;
+      }
+      if (S.chart.lockIdx !== null) return;
+      const g = S.chart.geom, j = Math.floor((p.vx - g.L) / g.cw);
+      if (j >= 0 && j < g.n) smShowCross(j, p.vy, p.rx, p.ry, false);
+      else smHideCross();
+    });
+    wrap.addEventListener('mouseleave', () => { if (!drag && S.chart.lockIdx === null) smHideCross(); });
+    wrap.addEventListener('mousedown', e => {
+      if (e.button !== 0) return;
+      const p = smEvtPos(e); if (!p) return;
+      drag = { vx: p.vx, start: S.chart.view.start, g: Object.assign({}, S.chart.geom), moved: false };
+      wrap.classList.add('dragging');
+    });
+    wrap.addEventListener('click', e => {
+      if (S.chart._justDragged) { S.chart._justDragged = false; return; }
+      const p = smEvtPos(e); if (!p) return;
+      const g = S.chart.geom, j = Math.floor((p.vx - g.L) / g.cw);
+      if (j < 0 || j >= g.n) return;
+      const gi = g.start + j;
+      S.chart.lockIdx = (S.chart.lockIdx === gi) ? null : gi;
+      smShowCross(j, p.vy, p.rx, p.ry, S.chart.lockIdx !== null);
+    });
+    wrap.addEventListener('dblclick', e => { e.preventDefault(); smViewReset(); });
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

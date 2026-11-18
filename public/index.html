@@ -173,6 +173,24 @@
 
 <div id="loading" class="loading-mask"><div class="loading-box"><div class="spinner"></div><div>正在拉取实时行情…</div><div class="small muted">首次加载需抓取全市场约 5,000+ 只个股，请稍候</div></div></div>
 
+<!-- 个股K线弹窗（日K/周K/成交量/筹码峰） -->
+<div id="stockModal" class="sm-mask" style="display:none">
+  <div class="sm-dialog" role="dialog" aria-modal="true" aria-label="个股K线详情">
+    <div class="sm-head">
+      <div class="sm-title"><span id="smName">—</span><span id="smCode" class="sm-code">—</span></div>
+      <div class="sm-quote" id="smQuote"></div>
+      <button id="smClose" class="sm-close" aria-label="关闭">×</button>
+    </div>
+    <div class="sm-tabs">
+      <button class="sm-tab active" data-period="day">日K</button>
+      <button class="sm-tab" data-period="week">周K</button>
+      <span class="sm-tabs-hint" id="smSource">—</span>
+    </div>
+    <div class="sm-body" id="smBody"><div class="empty">载入中…</div></div>
+    <div class="sm-foot" id="smFoot"></div>
+  </div>
+</div>
+
 <script src="/app.js" defer></script>
 </body>
 </html>
