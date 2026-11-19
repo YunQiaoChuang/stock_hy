@@ -726,3 +726,15 @@ tbody tr.dg-edge-row:hover td{background:var(--edge-bg)}
   .sm-chip-body .sm-chip-stats{grid-template-columns:repeat(2,1fr)}
   .sm-clr-grid{grid-template-columns:repeat(3,1fr)}
 }
+
+/* ═══ 集合竞价 · 首板封板概率模块 ═══ */
+.btn-ghost{background:#fff;border-color:var(--line);color:var(--ink2)}
+.btn-ghost:hover{border-color:var(--blue2);color:var(--blue2)}
+.btn-sm{padding:5px 10px;font-size:11.5px}
+.sel-sm{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:7px;padding:5px 8px;font-size:11.5px;font-family:inherit;outline:none}
+.ap-high{color:var(--up)!important}
+.ap-mid{color:var(--warn)!important}
+.ap-low{color:var(--blue2)!important}
+#pane-auction .dg-kpi-grid{grid-template-columns:repeat(4,1fr)}
+#pane-auction .conclusion{border-left:4px solid var(--blue2);padding:11px 14px}
+@media(max-width:900px){#pane-auction .dg-kpi-grid{grid-template-columns:repeat(2,1fr)}}

@@ -86,6 +86,8 @@
     dgHistSelected: null, dgHistMethodOpen: false,
     dgOpts: { days: 12, showAll: 0, sort: 'score', sortDir: 'desc', role: '全部', limit: 60 },
     dgOfflineTimer: null,
+    auction: null, auctionLoading: false, auctionError: null, auctionAt: 0,
+    auctionOpts: { days: 10 }, auctionMethodOpen: false,
     news: null, newsLoading: false, newsError: null, newsAt: 0, newsSince: null,
     newsInterval: 30, newsWindow: 72, newsPaused: false, newsFilter: 'all',
     newsKeyword: '', newsMethodOpen: false, newsShowAll: false,
@@ -150,7 +152,7 @@
     loadBoards();
     const qs = new URLSearchParams(location.search);
     const initTab = qs.get('tab');
-    if (initTab && ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'enlighten'].indexOf(initTab) >= 0) switchTab(initTab);
+    if (initTab && ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'auction', 'enlighten'].indexOf(initTab) >= 0) switchTab(initTab);
     // 深链：?stock=000001&period=week 直接打开个股K线弹窗
     const initStock = qs.get('stock');
     if (/^\d{6}$/.test(initStock || '')) {
@@ -317,7 +319,7 @@
   function switchTab(t) {
     S.tab = t;
     [...$('tabs').children].forEach(c => c.classList.toggle('active', c.dataset.tab === t));
-    ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'enlighten'].forEach(k => $('pane-' + k).classList.toggle('active', k === t));
+    ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'auction', 'enlighten'].forEach(k => $('pane-' + k).classList.toggle('active', k === t));
     if (t === 'pullback' && !S.pull && !S.pullLoading) loadPullback(false);
     if (t === 'dragon') {
       const histParam = new URLSearchParams(location.search).get('hist');
@@ -328,6 +330,7 @@
       if (!S.dgHistOpen) setTimeout(startNewsMonitor, 0);
     } else stopNewsMonitor();
     if (t === 'enlighten' && !S.en && !S.enLoading) loadEnlightenment(false);
+    if (t === 'auction' && !S.auction && !S.auctionLoading) loadAuction(false);
     setTimeout(() => { Object.values(S.charts || {}).forEach(c => { try { c.resize(); } catch (e) { } }); }, 60);
   }
 
@@ -352,6 +355,7 @@
     $('badgeAI').textContent = m.aiConfigured ? '已接模型' : '本地';
     if (S.pull) $('badgePull').textContent = (S.pull.list || []).length;
     if (S.en) $('badgeEn').textContent = (S.en.best ? String(S.en.best.name).slice(0, 6) : '已回测');
+    if (S.auction) $('badgeAuction').textContent = (S.auction.list || []).length || '—';
   }
 
   function renderMeta(m, ov) {
@@ -2605,6 +2609,137 @@
         '<div class="card pad" style="margin-top:12px"><button class="btn btn-primary" id="enRetry">重新回测</button></div>';
       $('enRetry').onclick = () => loadEnlightenment(true);
     } finally { S.enLoading = false; }
+  }
+
+  /* ═══════════ 集合竞价 · 首板封板概率（历史回测） ═══════════ */
+  function auctionProbCls(p) {
+    return p === null || p === undefined ? '' : p >= 60 ? 'ap-high' : p >= 45 ? 'ap-mid' : 'ap-low';
+  }
+  function auctionMethodCard() {
+    const meth = (S.auction && S.auction.method) || {};
+    const rules = meth.rules || [];
+    const body = rules.map(r => '<div class="kv"><span class="k">' + E(r.name) + '</span><span class="v">' + E(r.text) + '</span></div>').join('');
+    const open = S.auctionMethodOpen;
+    return '<div class="card pad dg-card" style="margin-top:12px">' +
+      '<div class="dg-card-head"><h4>回测口径与方法</h4>' +
+      '<button class="btn btn-ghost btn-sm" id="apMethodToggle">' + (open ? '收起' : '查看') + '全部口径</button></div>' +
+      '<div id="apMethodBody" style="display:' + (open ? '' : 'none') + '">' + body +
+      '<div class="note-box" style="margin-top:10px">' + E(meth.caveat || '') + '</div></div></div>';
+  }
+
+  function renderAuction() {
+    const j = S.auction;
+    if (!j) return;
+    if (!j.available) {
+      $('pane-auction').innerHTML = '<div class="card empty"><b>无法回测：' + E(j.reason || j.emptyReason || '样本不足') + '</b><br>' +
+        '<span class="small muted">系统不会用推测数据填充；可稍后重试。</span></div>' +
+        '<div class="card pad" style="margin-top:12px"><button class="btn btn-primary" id="apRetry">重新回测</button></div>';
+      const rb = $('apRetry'); if (rb) rb.onclick = () => loadAuction(true);
+      return;
+    }
+    const m = j.meta || {}, buckets = j.buckets || [], list = j.list || [], val = j.validation || {};
+    const sm = j.samples || {};
+    const daysOpts = [5, 8, 10, 12, 15].map(d => '<option value="' + d + '"' + (Number(S.auctionOpts.days) === d ? ' selected' : '') + '>' + d + ' 日</option>').join('');
+    const head = '<div class="sec-head"><h3>集合竞价 · 首板封板概率</h3>' +
+      src('东方财富涨停/炸板池 + 腾讯前复权日K') +
+      '<span class="spacer"></span><label class="small muted">回测窗口 </label>' +
+      '<select id="apDays" class="sel-sm">' + daysOpts + '</select>' +
+      '<button class="btn btn-ghost btn-sm" id="apRefresh">重新回测</button></div>';
+
+    // 顶部口径横幅：明确是已发生事实的概率复盘
+    const banner = '<div class="conclusion card" style="border-left-color:var(--blue);margin-bottom:12px">' +
+      '<div class="lead"><b>这是历史回测，不是明日预测，也不是买入信号。</b>集合竞价阶段唯一能事前确定、且免费数据能回测的信号是「竞价高开幅度＝开盘价÷前收−1」。' +
+      '本页用近 ' + (sm.train || 0) + ' 个首板样本统计「高开多少 → 当日能否封住首板」的历史频率，并用最近 1 个交易日（' + E(fmtDate(j.holdoutDate)) + '）做样本外验证。</div></div>';
+
+    // KPI
+    const kpi = '<div class="dg-kpi-grid">' +
+      '<div class="dg-kpi"><span>基准封板率</span><b>' + E(j.baseRate === null ? '—' : j.baseRate + '%') + '</b><em>训练池全体首板</em></div>' +
+      '<div class="dg-kpi"><span>训练 / 验证样本</span><b>' + E(sm.train || 0) + ' / ' + E(sm.holdout || 0) + '</b><em>跳过 ' + E(sm.skipped || 0) + '（缺前收）</em></div>' +
+      '<div class="dg-kpi"><span>样本外命中率</span><b>' + E(val.hitRate === null || val.hitRate === undefined ? '—' : val.hitRate + '%') + '</b><em>' + E(val.n || 0) + ' 只候选中' + '</em></div>' +
+      '<div class="dg-kpi"><span>高/低档实际封板</span><b>' + E(val.highActualSealRate === null || val.highActualSealRate === undefined ? '—' : val.highActualSealRate + '%') +
+        ' <span class="small muted">vs</span> ' + E(val.lowActualSealRate === null || val.lowActualSealRate === undefined ? '—' : val.lowActualSealRate + '%') + '</b><em>高概率档 vs 低概率档</em></div>' +
+      '</div>';
+
+    // 概率分档表
+    const bucketRows = buckets.map(b => {
+      const p = b.prob;
+      const barW = p === null ? 0 : Math.max(2, Math.min(100, p));
+      return '<tr><td class="left"><b>' + E(b.label) + '</b></td>' +
+        '<td>' + E(b.n) + '</td><td>' + E(b.sealed) + ' / ' + E(b.failed) + '</td>' +
+        '<td>' + E(b.rate === null ? '—' : b.rate + '%') + '</td>' +
+        '<td><b class="' + auctionProbCls(p) + '">' + E(p === null ? '—' : p + '%') + '</b>' +
+        '<div class="dg-bar" style="margin-top:3px"><i class="' + (p >= 60 ? 'red' : p >= 45 ? 'warn' : 'blue') + '" style="width:' + barW.toFixed(0) + '%"></i></div></td>' +
+        '<td>' + tag(b.confidence, b.confidence === '极低' ? '' : b.confidence === '低' ? 'warn' : '') + '</td></tr>';
+    }).join('');
+    const bucketCard = '<div class="card pad" style="margin-top:12px"><h4>竞价高开幅度 → 首板封板概率（训练样本）</h4>' +
+      '<div class="tbl-wrap"><table><thead><tr><th class="left">竞价高开区间</th><th>样本数</th><th>封住/未封</th><th>实际封板率</th><th>平滑后概率</th><th>置信度</th></tr></thead>' +
+      '<tbody>' + bucketRows + '</tbody></table></div>' +
+      '<div class="note-box">' + E(j.note || '') + '<br>概率＝(封住数+α)/(样本数+2α)，α=1（拉普拉斯平滑）；「平滑后概率」用于给个股打分，样本越小的档位越向 50% 收缩。' +
+      '概率仅为历史条件频率，<b>不代表未来、更不是收益预测</b>。</div></div>';
+
+    // 样本外验证结论
+    const valCard = '<div class="card pad" style="margin-top:12px"><h4>样本外验证 · ' + E(fmtDate(j.holdoutDate)) + '</h4>' +
+      '<div class="kv"><span class="k">验证结论</span><span class="v">' + E(val.note || '—') + '</span></div>' +
+      '<div class="kv"><span class="k">命中率定义</span><span class="v">概率≥50% 判「应封住」、&lt;50% 判「应炸板」，与实际结果一致的比例；仅方向性检验，非显著性检验。</span></div></div>';
+
+    // 个股列表
+    const probBar = p => {
+      const w = p === null || p === undefined ? 0 : Math.max(2, Math.min(100, p));
+      return '<div style="display:flex;align-items:center;gap:6px"><b class="' + auctionProbCls(p) + '">' + E(p === null ? '—' : p + '%') + '</b>' +
+        '<div class="dg-bar" style="flex:1;min-width:42px"><i class="' + (p >= 60 ? 'red' : p >= 45 ? 'warn' : 'blue') + '" style="width:' + w.toFixed(0) + '%"></i></div></div>';
+    };
+    const listRows = list.map(x => {
+      const bk = buckets.find(b => b.key === x.bucket);
+      const hitIco = x.hit === null ? '<span class="muted">—</span>' : x.hit ? '<span class="up">✓</span>' : '<span class="down">✗</span>';
+      const resultTag = x.sealed === 1 ? tag('封住首板', 'red') : tag('炸板未封', 'green');
+      return '<tr><td class="left">' + sn(x.code, x.name) + '<div class="small muted">' + E(x.code) + '</div></td>' +
+        '<td class="left">' + E(x.industry || '—') + '<div class="small muted">' + E(x.board || '') + '</div></td>' +
+        '<td>' + PC(x.gap, 2) + '</td>' +
+        '<td class="left">' + E(bk ? bk.label : '—') + '</td>' +
+        '<td style="min-width:110px">' + probBar(x.probability) + '</td>' +
+        '<td>' + E(bk ? bk.n : '—') + '</td>' +
+        '<td>' + resultTag + '</td>' +
+        '<td style="text-align:center">' + hitIco + '</td></tr>';
+    }).join('');
+    const listCard = '<div class="sec"><div class="sec-head"><h3>候选个股（' + E(fmtDate(j.holdoutDate)) + ' 冲击首板的股票）</h3>' +
+      '<span class="small muted">按历史封板概率降序 · 点击名称看K线</span></div>' +
+      '<div class="card pad"><div class="tbl-wrap"><table><thead><tr><th class="left">个股</th><th class="left">行业/板块</th><th>竞价高开</th><th class="left">落入档位</th><th>封板概率</th><th>档位样本</th><th>实际结果</th><th>命中</th></tr></thead>' +
+      '<tbody>' + listRows + '</tbody></table></div>' +
+      (list.length ? '' : '<div class="empty">该交易日无首板样本</div>') +
+      '<div class="note-box">列表是<b>已发生事实的概率复盘</b>：这些都是当日冲击首板的股票，概率来自更早交易日的历史频率，实际结果用于验证概率是否有区分度。高开≠可买，≥9.5% 近涨停开盘的个股实盘常买不进。</div></div></div>';
+
+    const metaNote = '<div class="small muted" style="margin-top:8px">数据口径：' + E(m.dataSourceNote || '') + '</div>';
+
+    $('pane-auction').innerHTML = head + banner + kpi + bucketCard + valCard + listCard + auctionMethodCard() +
+      '<div class="disclaimer" style="margin-top:14px"><strong>免责声明</strong>：' + E(m.disclaimer || '') + '</div>' + metaNote;
+
+    $('apDays').onchange = e => { S.auctionOpts.days = Number(e.target.value) || 10; loadAuction(true); };
+    $('apRefresh').onclick = () => loadAuction(true);
+    const mt = $('apMethodToggle');
+    if (mt) mt.onclick = () => { S.auctionMethodOpen = !S.auctionMethodOpen; renderAuction(); };
+  }
+
+  async function loadAuction(force) {
+    if (S.auctionLoading) return;
+    S.auctionLoading = true;
+    if (!S.auction) $('pane-auction').innerHTML = '<div class="card empty">正在回溯近 ' + S.auctionOpts.days + ' 个交易日涨停/炸板池与真实日K，回测竞价高开首板概率…</div>';
+    const q = new URLSearchParams({ days: String(S.auctionOpts.days) });
+    if (force) q.set('force', '1');
+    try {
+      const r = await fetch('/api/auction?' + q.toString(), { cache: 'no-store' });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+      S.auction = j; S.auctionAt = Date.now(); S.auctionError = null;
+      renderAuction();
+      $('badgeAuction').textContent = (j.list || []).length || '—';
+    } catch (e) {
+      S.auctionError = e.message;
+      $('badgeAuction').textContent = '—';
+      $('pane-auction').innerHTML = '<div class="card empty"><b>回测失败：' + E(e.message) + '</b><br>' +
+        '<span class="small muted">' + (isConnError(e) ? E(SERVICE_HINT) : '服务端或上游数据源返回异常；系统不会用推测数据填充。') + '</span></div>' +
+        '<div class="card pad" style="margin-top:12px"><button class="btn btn-primary" id="apRetry">重新回测</button></div>';
+      const rb = $('apRetry'); if (rb) rb.onclick = () => loadAuction(true);
+    } finally { S.auctionLoading = false; }
   }
 
   function renderEnlightenment() {
