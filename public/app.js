@@ -2836,7 +2836,7 @@
       });
   }
 
-  // 分时图自动刷新：只在「弹窗开着 + 分时 tab + 交易时段」时每 30 秒重拉，
+  // 分时图自动刷新：只在「弹窗开着 + 分时 tab + 交易时段」时每 12 秒重拉，
   // 不复用主看板定时器，关闭弹窗或切到K线 tab 立即停掉。
   function stopMinuteTimer() {
     if (S.chart && S.chart.minuteTimer) { clearInterval(S.chart.minuteTimer); S.chart.minuteTimer = null; }
@@ -2850,7 +2850,7 @@
       if (!cur || !cur.open || cur.period !== 'minute') { stopMinuteTimer(); return; }
       if (!isTradingNow()) { stopMinuteTimer(); renderStockChart(); return; }
       refreshMinuteOnly(cur.code);
-    }, 30000);
+    }, 12000);
   }
   async function refreshMinuteOnly(code) {
     try {
@@ -2951,13 +2951,13 @@
       const trading = isTradingNow();
       $('smSource').textContent = '分时 · ' + E(md.source || '来源不可用') + (md.date ? ' · 交易日 ' + E(String(md.date)) : '') +
         ' · 数据拉取 ' + E(String(md.asOf || '').slice(11, 19)) +
-        (trading ? ' · 每 30 秒自动刷新' : ' · 已收盘（静态）');
+        (trading ? ' · 每 12 秒自动刷新' : ' · 已收盘（静态）');
       $('smBody').innerHTML = md.rows && md.rows.length
         ? '<div class="sm-minute-chart">' + smMinuteSvg(rows, q, md.date) + '</div>'
         : '<div class="empty">' + E(md.reason || '分时数据暂不可用') + '</div>';
       $('smFoot').innerHTML = '<div class="note-box">分时数据来自腾讯证券公开接口（每分钟价格 / 成交量 / 成交额，服务端缓存 60 秒）；均价线＝累计成交额 ÷ 累计成交量，与行情软件口径一致。' +
         (trading
-          ? '<b>当前为交易时段，每 30 秒自动重拉分时</b>；盘后自动停止。'
+          ? '<b>当前为交易时段，每 12 秒自动重拉分时</b>；盘后自动停止。'
           : '<b>当前为非交易时段，展示最近一个交易日的完整分时，不再变动</b>；开盘后自动恢复刷新。') +
         '<b>分钟级数据，不是逐笔成交，不构成投资建议。</b></div>';
       syncMinuteTimer();
