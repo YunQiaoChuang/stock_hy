@@ -143,6 +143,7 @@
     });
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && S.chart.open) closeStockChart(); });
     if ($('smClose')) $('smClose').onclick = closeStockChart;
+    initStockSearch();
     [...document.querySelectorAll('.sm-tab')].forEach(b => {
       b.onclick = () => { if (S.chart.data && b.dataset.period !== S.chart.period) { S.chart.period = b.dataset.period; S.chart.view = null; S.chart.lockIdx = null; renderStockChart(); } };
     });
@@ -154,7 +155,8 @@
     const initStock = qs.get('stock');
     if (/^\d{6}$/.test(initStock || '')) {
       openStockChart(initStock);
-      if (qs.get('period') === 'week') S.chart.period = 'week';
+      const initPeriod = qs.get('period');
+      if (initPeriod === 'week' || initPeriod === 'minute') S.chart.period = initPeriod;
       const z = Number(qs.get('zoom'));
       if (z >= 6 && z <= 1000) S.chart._initZoom = Math.round(z);
       const d = qs.get('day');
@@ -2744,7 +2746,57 @@
     safeChart('enMethodChart', opt, items);
   }
 
-  /* ═══════════════ 个股K线弹窗：日K / 周K / 成交量 / 筹码峰 ═══════════════ */
+  /* ═══════════════ 个股搜索（代码 / 名称 → 打开K线弹窗） ═══════════════ */
+  function initStockSearch() {
+    const input = $('stockSearchInput'), panel = $('stockSearchPanel');
+    if (!input || !panel) return;
+    let timer = null, hits = [];
+    const close = () => { panel.style.display = 'none'; panel.innerHTML = ''; };
+    const pick = x => {
+      close(); input.value = '';
+      openStockChart(x.code);
+      if (S.chart && x.name) { S.chart.name = x.name; $('smName').textContent = x.name; }
+    };
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      const kw = input.value.trim();
+      if (!kw) { close(); return; }
+      timer = setTimeout(async () => {
+        try {
+          const r = await fetch('/api/search?q=' + encodeURIComponent(kw), { cache: 'no-store' });
+          const j = await r.json();
+          hits = j.list || [];
+          if (!hits.length) {
+            panel.innerHTML = '<div class="ss-empty">未找到匹配股票（全市场约 5,500 只，按代码 / 名称匹配）</div>';
+          } else {
+            panel.innerHTML = hits.map((x, i) =>
+              '<div class="ss-item" data-i="' + i + '"><b>' + E(x.name) + '</b><span class="ss-code">' + E(x.code) + '</span>' +
+              '<span class="ss-px ' + (x.pct > 0 ? 'up' : x.pct < 0 ? 'down' : '') + '">' + N(x.price) + '</span>' +
+              '<span class="ss-pct ' + (x.pct > 0 ? 'up' : x.pct < 0 ? 'down' : '') + '">' + (x.pct > 0 ? '+' : '') + N(x.pct) + '%</span>' +
+              '<span class="ss-board">' + E(x.board || '') + '</span></div>').join('') +
+              '<div class="ss-foot">新浪财经全市场行情 · 截至 ' + E(String(j.asOf || '').slice(0, 16).replace('T', ' ')) + ' · ↑↓ 选择 / Enter 打开</div>';
+            [...panel.querySelectorAll('.ss-item')].forEach(el => { el.onclick = () => pick(hits[Number(el.dataset.i)]); });
+          }
+          panel.style.display = 'block';
+        } catch (e) { panel.innerHTML = '<div class="ss-empty">搜索失败：' + E(e.message) + '</div>'; panel.style.display = 'block'; }
+      }, 220);
+    });
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { close(); input.blur(); return; }
+      if (!hits.length) return;
+      let idx = [...panel.querySelectorAll('.ss-item')].findIndex(el => el.classList.contains('active'));
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        idx = e.key === 'ArrowDown' ? Math.min(hits.length - 1, idx + 1) : Math.max(0, idx - 1);
+        [...panel.querySelectorAll('.ss-item')].forEach((el, i) => el.classList.toggle('active', i === idx));
+      } else if (e.key === 'Enter' && idx >= 0) { e.preventDefault(); pick(hits[idx]); }
+    });
+    document.addEventListener('click', e => {
+      if (!$('stockSearch').contains(e.target)) close();
+    });
+  }
+
+  /* ═══════════════ 个股K线弹窗：分时 / 日K / 周K / 成交量 / 筹码峰 ═══════════════ */
   function openStockChart(code) {
     const c = String(code || '').replace(/\D/g, '').slice(0, 6);
     if (!/^\d{6}$/.test(c)) return;
@@ -2799,9 +2851,76 @@
       '<span class="small muted">' + E(rateNote) + '</span></div></div>';
   }
 
+  /** 分时图：价格线 + 均价线 + 昨收基准 + 成交量，纯 SVG 无额外依赖 */
+  function smMinuteSvg(rows, quote, mdate) {
+    if (!rows || rows.length < 2) return '<div class="empty">分时数据不足（需 ≥2 分钟），无法绘制</div>';
+    const W = 1110, H = 520, L = 62, R = 68, PT = 22, PB = 388, VT = 406, VB = 498;
+    const PW = W - L - R;
+    const prev = Number(quote && quote.prevClose) > 0 ? Number(quote.prevClose) : rows[0].price;
+    const prices = rows.map(x => x.price);
+    const maxDev = Math.max(0.02, ...prices.map(p => Math.abs(p - prev) / prev));
+    const hi = prev * (1 + maxDev * 1.12), lo = prev * (1 - maxDev * 1.12);
+    const Y = p => PB - (p - lo) / (hi - lo) * (PB - PT);
+    const X = i => L + i / Math.max(1, rows.length - 1) * PW;
+    const a = [];
+    a.push('<svg viewBox="0 0 ' + W + ' ' + H + '" class="sm-chart-svg" preserveAspectRatio="xMidYMid meet">');
+    // 网格 + 涨跌幅刻度
+    for (let k = 0; k <= 4; k++) {
+      const p = lo + (hi - lo) * k / 4, y = Y(p);
+      const dev = (p - prev) / prev * 100;
+      const col = dev > 0.01 ? 'var(--up)' : dev < -0.01 ? 'var(--down)' : 'var(--ink2)';
+      a.push('<line x1="' + L + '" y1="' + y.toFixed(1) + '" x2="' + (W - R) + '" y2="' + y.toFixed(1) + '" stroke="#eef2f7"/>');
+      a.push('<text x="' + (W - R + 6) + '" y="' + (y + 4).toFixed(1) + '" font-size="11" fill="' + col + '">' + (dev > 0 ? '+' : '') + dev.toFixed(2) + '%</text>');
+      a.push('<text x="6" y="' + (y + 4).toFixed(1) + '" font-size="11" fill="#8593a3">' + p.toFixed(2) + '</text>');
+    }
+    // 昨收虚线
+    a.push('<line x1="' + L + '" y1="' + Y(prev).toFixed(1) + '" x2="' + (W - R) + '" y2="' + Y(prev).toFixed(1) + '" stroke="#8593a3" stroke-dasharray="4 4"/>');
+    // 成交量柱（每分钟）
+    const maxV = Math.max(1, ...rows.map(x => x.volume || 0));
+    const bw = Math.max(1, PW / rows.length * 0.62);
+    rows.forEach((x, i) => {
+      const h = (x.volume || 0) / maxV * (VB - VT);
+      const chg = x.price >= prev;
+      a.push('<rect x="' + (X(i) - bw / 2).toFixed(1) + '" y="' + (VB - h).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + h.toFixed(1) + '" fill="' + (chg ? '#d92b2b' : '#0f9960') + '" opacity=".55"/>');
+    });
+    // 价格线
+    const pts = rows.map((x, i) => X(i).toFixed(1) + ',' + Y(x.price).toFixed(1)).join(' ');
+    a.push('<polyline points="' + pts + '" fill="none" stroke="#1f4e8c" stroke-width="1.8"/>');
+    // 均价线（累计成交额 / 累计成交量 / 100，与腾讯口径一致）
+    let amt = 0, vol = 0;
+    const avgPts = rows.map((x, i) => {
+      amt += Number(x.amount) || 0;
+      vol += Number(x.volume) || 0;
+      const avg = vol > 0 ? amt / (vol * 100) : x.price;
+      return X(i).toFixed(1) + ',' + Y(avg).toFixed(1);
+    }).join(' ');
+    a.push('<polyline points="' + avgPts + '" fill="none" stroke="#d97706" stroke-width="1.5" stroke-dasharray="3 2"/>');
+    // 时间轴
+    [0, Math.floor(rows.length / 4), Math.floor(rows.length / 2), Math.floor(rows.length * 3 / 4), rows.length - 1].forEach(i => {
+      a.push('<text x="' + X(i).toFixed(1) + '" y="' + (VB + 15) + '" font-size="10.5" fill="#6b7a8c" text-anchor="middle">' + E(rows[i].time) + '</text>');
+    });
+    a.push('<text x="' + L + '" y="14" font-size="10.5" fill="#8593a3">分时价格 / 均价 · ' + E(mdate || '最近交易日') + ' · 腾讯证券</text>');
+    a.push('<text x="' + L + '" y="' + (VT - 6) + '" font-size="10.5" fill="#8593a3">成交量（手）</text>');
+    a.push('</svg>');
+    return a.join('');
+  }
+
   function renderStockChart() {
     const j = S.chart.data; if (!j) return;
     const per = S.chart.period;
+    if (per === 'minute') {
+      const md = j.minute || {}, rows = md.rows || [];
+      const q = j.quote || {};
+      [...document.querySelectorAll('.sm-tab')].forEach(b => b.classList.toggle('active', b.dataset.period === per));
+      $('smSource').textContent = '分时 · ' + E(md.source || '来源不可用') + (md.date ? ' · 交易日 ' + E(String(md.date)) : '') +
+        ' · 截至 ' + E(String(md.asOf || '').slice(11, 19));
+      $('smBody').innerHTML = md.rows && md.rows.length
+        ? '<div class="sm-minute-chart">' + smMinuteSvg(rows, q, md.date) + '</div>'
+        : '<div class="empty">' + E(md.reason || '分时数据暂不可用') + '</div>';
+      $('smFoot').innerHTML = '<div class="note-box">分时数据来自腾讯证券公开接口（每分钟价格 / 成交量 / 成交额）；均价线＝累计成交额 ÷ 累计成交量，与行情软件口径一致。' +
+        '非交易时段展示最近一个交易日的完整分时。<b>仅为已发生行情的展示，不构成投资建议。</b></div>';
+      return;
+    }
     const series = j[per] || {};
     const chip = (j.chip || {})[per] || null;
     // 顶部快照

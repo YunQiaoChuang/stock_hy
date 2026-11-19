@@ -18,6 +18,10 @@
         <div class="brand-sub">A股量化复盘 / 连板低吸 / 全市场筛选 · 免费公开数据源</div>
       </div>
     </div>
+    <div class="stock-search" id="stockSearch">
+      <input id="stockSearchInput" type="text" placeholder="搜索股票代码 / 名称" autocomplete="off" title="输入代码或名称，从全市场列表中查找并打开K线详情">
+      <div class="ss-panel" id="stockSearchPanel" style="display:none"></div>
+    </div>
     <div class="status-cluster">
       <div class="status-item"><span class="lbl">交易状态</span><span id="tradeState" class="val">—</span></div>
       <div class="status-item"><span class="lbl">数据时点</span><span id="dataTime" class="val">—</span></div>
@@ -182,6 +186,7 @@
       <button id="smClose" class="sm-close" aria-label="关闭">×</button>
     </div>
     <div class="sm-tabs">
+      <button class="sm-tab" data-period="minute">分时</button>
       <button class="sm-tab active" data-period="day">日K</button>
       <button class="sm-tab" data-period="week">周K</button>
       <span class="sm-tabs-hint" id="smSource">—</span>

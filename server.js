@@ -402,10 +402,11 @@ async function getStockChart(query) {
   if (!/^\d{6}$/.test(code)) return { error: '缺少有效的 6 位股票代码', code: code || null };
   const t0 = Date.now();
   const dayLimit = 160, weekLimit = 80;
-  const [day, week, quotes] = await Promise.all([
+  const [day, week, quotes, minute] = await Promise.all([
     ds.getKlineData(code, dayLimit).catch(() => ({ rows: [], source: null, adjusted: null })),
     ds.getPeriodKline(code, 'week', weekLimit).catch(() => ({ rows: [], source: null, adjusted: false })),
-    ds.getQQQuotes([code]).catch(() => ({}))
+    ds.getQQQuotes([code]).catch(() => ({})),
+    ds.getMinute(code).catch(() => ({ rows: [], source: null, reason: '分时接口暂不可用' }))
   ]);
   const q = quotes[code] || {};
   const price = Number(q.price) > 0 ? Number(q.price) : (day.rows.length ? day.rows[day.rows.length - 1].close : null);
@@ -431,6 +432,7 @@ async function getStockChart(query) {
     },
     day: { rows: day.rows, source: day.source, adjusted: day.adjusted, asOf: day.asOf },
     week: { rows: week.rows, source: week.source, adjusted: week.adjusted, asOf: week.asOf, reason: week.reason || null },
+    minute: { rows: minute.rows || [], source: minute.source || null, date: minute.date || null, asOf: minute.asOf || null, reason: minute.reason || null },
     chip: { day: chipDay, week: chipWeek },
     method: {
       day: '日K：腾讯证券前复权优先，限流时自动降级新浪财经不复权；来源见各周期 source 字段。',
@@ -1088,6 +1090,24 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === '/api/news') return sendJson(res, await getNews(q, q.force === '1'));
     if (u.pathname === '/api/enlightenment') return sendJson(res, await getEnlightenment(q, q.force === '1'));
     if (u.pathname === '/api/health') return sendJson(res, { ...beijingNow(), port: ACTIVE_PORT, health: ds.getHealth(), ai: aiStatus(), disclaimer: DISCLAIMER });
+    if (u.pathname === '/api/search') {
+      const kw = String(q.q || '').trim();
+      if (!kw) return sendJson(res, { list: [], total: 0 });
+      const uni = await ds.getUniverse().catch(() => ({ list: [] }));
+      const k = kw.toLowerCase();
+      const numeric = /^\d+$/.test(k);
+      const list = (uni.list || []).filter(x =>
+        numeric ? String(x.code).includes(k) : (String(x.name || '').toLowerCase().includes(k) || String(x.code).includes(k))
+      ).sort((a, b) => {
+        // 精确匹配优先，其次代码前缀，再按涨幅
+        const score = x => (String(x.code) === k ? 4 : String(x.name || '').toLowerCase() === k ? 3 : String(x.code).startsWith(k) ? 2 : 1);
+        return score(b) - score(a) || (Number(b.pct) || 0) - (Number(a.pct) || 0);
+      }).slice(0, 12).map(x => ({
+        code: x.code, name: x.name, price: x.price, pct: x.pct,
+        board: x.board, industry: x.industry || null, floatCap: x.floatCap
+      }));
+      return sendJson(res, { list, total: list.length, asOf: uni.asOf || null, source: ds.SOURCE_META.sina.label });
+    }
     if (u.pathname === '/api/boards') return sendJson(res, await ds.getSectorBoards());
     if (u.pathname === '/api/pools') return sendJson(res, await ds.getPools());
     if (u.pathname === '/api/quotes') {
@@ -1096,6 +1116,15 @@ const server = http.createServer(async (req, res) => {
     }
     if (u.pathname === '/api/kline') return sendJson(res, { code: q.code, kline: await ds.getKline(q.code, Number(q.limit) || 90), source: '腾讯证券日K(前复权)' });
     if (u.pathname === '/api/stock/chart') return sendJson(res, await getStockChart(q));
+    if (u.pathname === '/api/stock/minute') {
+      const code = String(q.code || '').replace(/\D/g, '').slice(0, 6);
+      if (!/^\d{6}$/.test(code)) return sendJson(res, { error: '缺少有效的 6 位股票代码' }, 400);
+      const [minute, quotes] = await Promise.all([
+        ds.getMinute(code).catch(() => ({ rows: [], source: null, reason: '上游不可用' })),
+        ds.getQQQuotes([code]).catch(() => ({}))
+      ]);
+      return sendJson(res, { code, minute, quote: quotes[code] || {}, asOf: new Date().toISOString() });
+    }
     if (u.pathname === '/api/universe') {
       const uni = await ds.getUniverse();
       const rows = an.applyFilters(uni.list, q, null);
