@@ -2611,9 +2611,12 @@
     } finally { S.enLoading = false; }
   }
 
-  /* ═══════════ 集合竞价 · 首板封板概率（历史回测） ═══════════ */
+  /* ═══════════ 集合竞价 · 多因子首板封板概率（选股视图） ═══════════ */
   function auctionProbCls(p) {
-    return p === null || p === undefined ? '' : p >= 60 ? 'ap-high' : p >= 45 ? 'ap-mid' : 'ap-low';
+    return p === null || p === undefined ? '' : p >= 75 ? 'ap-high' : p >= 50 ? 'ap-mid' : 'ap-low';
+  }
+  function auctionTierCls(t) {
+    return t === 'focus' ? 'red' : t === 'watch' ? 'warn' : '';
   }
   function auctionMethodCard() {
     const meth = (S.auction && S.auction.method) || {};
@@ -2637,80 +2640,107 @@
       const rb = $('apRetry'); if (rb) rb.onclick = () => loadAuction(true);
       return;
     }
-    const m = j.meta || {}, buckets = j.buckets || [], list = j.list || [], val = j.validation || {};
-    const sm = j.samples || {};
+    const m = j.meta || {}, list = j.list || [], factors = j.factors || [], val = j.validation || {};
+    const rolling = val.rolling || {}, sm = j.samples || {};
+    const focus = list.filter(x => x.tier === 'focus'), watch = list.filter(x => x.tier === 'watch');
     const daysOpts = [5, 8, 10, 12, 15].map(d => '<option value="' + d + '"' + (Number(S.auctionOpts.days) === d ? ' selected' : '') + '>' + d + ' 日</option>').join('');
-    const head = '<div class="sec-head"><h3>集合竞价 · 首板封板概率</h3>' +
+    const head = '<div class="sec-head"><h3>集合竞价 · 多因子首板概率选股</h3>' +
       src('东方财富涨停/炸板池 + 腾讯前复权日K') +
       '<span class="spacer"></span><label class="small muted">回测窗口 </label>' +
       '<select id="apDays" class="sel-sm">' + daysOpts + '</select>' +
       '<button class="btn btn-ghost btn-sm" id="apRefresh">重新回测</button></div>';
 
-    // 顶部口径横幅：明确是已发生事实的概率复盘
-    const banner = '<div class="conclusion card" style="border-left-color:var(--blue);margin-bottom:12px">' +
-      '<div class="lead"><b>这是历史回测，不是明日预测，也不是买入信号。</b>集合竞价阶段唯一能事前确定、且免费数据能回测的信号是「竞价高开幅度＝开盘价÷前收−1」。' +
-      '本页用近 ' + (sm.train || 0) + ' 个首板样本统计「高开多少 → 当日能否封住首板」的历史频率，并用最近 1 个交易日（' + E(fmtDate(j.holdoutDate)) + '）做样本外验证。</div></div>';
+    // 核心横幅：讲清"怎么用"——分层逻辑 + 事实复盘定位
+    const banner = '<div class="conclusion card" style="border-left-color:var(--up);margin-bottom:12px">' +
+      '<div class="lead"><b>怎么用：</b>系统用近 ' + (sm.train || 0) + ' 个首板样本训练一个多因子评分卡，对最近交易日（' + E(fmtDate(j.holdoutDate)) +
+      '）冲击首板的 ' + list.length + ' 只票按封板概率排序，分「重点关注 / 次选观察 / 回避」三档。' +
+      '高分＝历史上具备「位置低、竞价温和、量能健康、不过热」的特征组合；点击任意票看K线。' +
+      '<span class="up">这是历史回测的概率复盘，不是明日预测，也不是买入信号。</span></div></div>';
 
-    // KPI
+    // KPI：模型表现为主
     const kpi = '<div class="dg-kpi-grid">' +
-      '<div class="dg-kpi"><span>基准封板率</span><b>' + E(j.baseRate === null ? '—' : j.baseRate + '%') + '</b><em>训练池全体首板</em></div>' +
-      '<div class="dg-kpi"><span>训练 / 验证样本</span><b>' + E(sm.train || 0) + ' / ' + E(sm.holdout || 0) + '</b><em>跳过 ' + E(sm.skipped || 0) + '（缺前收）</em></div>' +
-      '<div class="dg-kpi"><span>样本外命中率</span><b>' + E(val.hitRate === null || val.hitRate === undefined ? '—' : val.hitRate + '%') + '</b><em>' + E(val.n || 0) + ' 只候选中' + '</em></div>' +
-      '<div class="dg-kpi"><span>高/低档实际封板</span><b>' + E(val.highActualSealRate === null || val.highActualSealRate === undefined ? '—' : val.highActualSealRate + '%') +
-        ' <span class="small muted">vs</span> ' + E(val.lowActualSealRate === null || val.lowActualSealRate === undefined ? '—' : val.lowActualSealRate + '%') + '</b><em>高概率档 vs 低概率档</em></div>' +
+      '<div class="dg-kpi"><span>滚动验证 AUC</span><b class="' + (rolling.avgAuc >= 0.55 ? 'up' : '') + '">' + E(rolling.avgAuc === null ? '—' : rolling.avgAuc) + '</b><em>' + E((rolling.days || []).length) + ' 日样本外均值 · 0.5=随机</em></div>' +
+      '<div class="dg-kpi"><span>高分 vs 低分封板率</span><b>' + E(rolling.topAvg === null ? '—' : rolling.topAvg + '%') +
+        ' <span class="small muted">vs</span> ' + E(rolling.botAvg === null ? '—' : rolling.botAvg + '%') + '</b><em>前30% vs 后30% 平均分档</em></div>' +
+      '<div class="dg-kpi"><span>重点关注</span><b class="up">' + E(focus.length) + ' <span class="small muted">只</span></b><em>共 ' + E(list.length) + ' 只候选</em></div>' +
+      '<div class="dg-kpi"><span>训练 / 验证样本</span><b>' + E(sm.train || 0) + ' / ' + E(sm.holdout || 0) + '</b><em>基准封板率 ' + E(j.baseRate === null ? '—' : j.baseRate + '%') + ' · 跳过 ' + E(sm.skipped || 0) + '</em></div>' +
       '</div>';
 
-    // 概率分档表
-    const bucketRows = buckets.map(b => {
-      const p = b.prob;
-      const barW = p === null ? 0 : Math.max(2, Math.min(100, p));
-      return '<tr><td class="left"><b>' + E(b.label) + '</b></td>' +
-        '<td>' + E(b.n) + '</td><td>' + E(b.sealed) + ' / ' + E(b.failed) + '</td>' +
-        '<td>' + E(b.rate === null ? '—' : b.rate + '%') + '</td>' +
-        '<td><b class="' + auctionProbCls(p) + '">' + E(p === null ? '—' : p + '%') + '</b>' +
-        '<div class="dg-bar" style="margin-top:3px"><i class="' + (p >= 60 ? 'red' : p >= 45 ? 'warn' : 'blue') + '" style="width:' + barW.toFixed(0) + '%"></i></div></td>' +
-        '<td>' + tag(b.confidence, b.confidence === '极低' ? '' : b.confidence === '低' ? 'warn' : '') + '</td></tr>';
-    }).join('');
-    const bucketCard = '<div class="card pad" style="margin-top:12px"><h4>竞价高开幅度 → 首板封板概率（训练样本）</h4>' +
-      '<div class="tbl-wrap"><table><thead><tr><th class="left">竞价高开区间</th><th>样本数</th><th>封住/未封</th><th>实际封板率</th><th>平滑后概率</th><th>置信度</th></tr></thead>' +
-      '<tbody>' + bucketRows + '</tbody></table></div>' +
-      '<div class="note-box">' + E(j.note || '') + '<br>概率＝(封住数+α)/(样本数+2α)，α=1（拉普拉斯平滑）；「平滑后概率」用于给个股打分，样本越小的档位越向 50% 收缩。' +
-      '概率仅为历史条件频率，<b>不代表未来、更不是收益预测</b>。</div></div>';
-
-    // 样本外验证结论
-    const valCard = '<div class="card pad" style="margin-top:12px"><h4>样本外验证 · ' + E(fmtDate(j.holdoutDate)) + '</h4>' +
-      '<div class="kv"><span class="k">验证结论</span><span class="v">' + E(val.note || '—') + '</span></div>' +
-      '<div class="kv"><span class="k">命中率定义</span><span class="v">概率≥50% 判「应封住」、&lt;50% 判「应炸板」，与实际结果一致的比例；仅方向性检验，非显著性检验。</span></div></div>';
-
-    // 个股列表
+    // 因子分解 chip：每只票 4 个因子的落档 + WoE 方向
+    const factorChip = (label, d) => {
+      if (!d) return '';
+      const positive = Number(d.woe) > 0;
+      const cls = positive ? 'ap-high' : Number(d.woe) < 0 ? 'ap-low' : 'ap-mid';
+      return '<span class="af-chip ' + cls + '" title="该档历史封板率 ' + (d.rate === null ? '—' : d.rate + '%') + ' · WoE ' + d.woe + '">' +
+        E(label) + ' ' + E(d.label) + '<i>' + (positive ? '+' : '') + E(d.woe) + '</i></span>';
+    };
     const probBar = p => {
       const w = p === null || p === undefined ? 0 : Math.max(2, Math.min(100, p));
       return '<div style="display:flex;align-items:center;gap:6px"><b class="' + auctionProbCls(p) + '">' + E(p === null ? '—' : p + '%') + '</b>' +
-        '<div class="dg-bar" style="flex:1;min-width:42px"><i class="' + (p >= 60 ? 'red' : p >= 45 ? 'warn' : 'blue') + '" style="width:' + w.toFixed(0) + '%"></i></div></div>';
+        '<div class="dg-bar" style="flex:1;min-width:40px"><i class="' + (p >= 75 ? 'red' : p >= 50 ? 'warn' : 'blue') + '" style="width:' + w.toFixed(0) + '%"></i></div></div>';
     };
-    const listRows = list.map(x => {
-      const bk = buckets.find(b => b.key === x.bucket);
-      const hitIco = x.hit === null ? '<span class="muted">—</span>' : x.hit ? '<span class="up">✓</span>' : '<span class="down">✗</span>';
-      const resultTag = x.sealed === 1 ? tag('封住首板', 'red') : tag('炸板未封', 'green');
-      return '<tr><td class="left">' + sn(x.code, x.name) + '<div class="small muted">' + E(x.code) + '</div></td>' +
-        '<td class="left">' + E(x.industry || '—') + '<div class="small muted">' + E(x.board || '') + '</div></td>' +
+
+    // 选股列表
+    const tierOrder = { focus: 0, watch: 1, avoid: 2 };
+    const sortedList = list.slice().sort((a, b) => (tierOrder[a.tier] - tierOrder[b.tier]) || (b.probability - a.probability));
+    const listRows = sortedList.map(x => {
+      const hitIco = x.hit === null || x.hit === undefined ? '<span class="muted">—</span>' : x.hit ? '<span class="up">✓</span>' : '<span class="down">✗</span>';
+      const resultTag = x.sealed === 1 ? tag('封住', 'red') : tag('炸板', 'green');
+      const chips = factorChip('竞价', x.detail && x.detail.gap) + factorChip('位置', x.detail && x.detail.loc) +
+        factorChip('量能', x.detail && x.detail.vr) + factorChip('热度', x.detail && x.detail.hot);
+      return '<tr class="ap-row ap-' + x.tier + '"><td style="text-align:center"><span class="ap-rank ' + auctionTierCls(x.tier) + '">' + E(x.rank) + '</span></td>' +
+        '<td class="left">' + sn(x.code, x.name) + '<div class="small muted">' + E(x.code) + ' · ' + E(x.industry || '') + '</div></td>' +
+        '<td>' + tag(x.tierLabel, auctionTierCls(x.tier)) + '</td>' +
+        '<td style="min-width:92px">' + probBar(x.probability) + '</td>' +
+        '<td class="left"><div class="ap-chips">' + chips + '</div></td>' +
         '<td>' + PC(x.gap, 2) + '</td>' +
-        '<td class="left">' + E(bk ? bk.label : '—') + '</td>' +
-        '<td style="min-width:110px">' + probBar(x.probability) + '</td>' +
-        '<td>' + E(bk ? bk.n : '—') + '</td>' +
         '<td>' + resultTag + '</td>' +
         '<td style="text-align:center">' + hitIco + '</td></tr>';
     }).join('');
-    const listCard = '<div class="sec"><div class="sec-head"><h3>候选个股（' + E(fmtDate(j.holdoutDate)) + ' 冲击首板的股票）</h3>' +
-      '<span class="small muted">按历史封板概率降序 · 点击名称看K线</span></div>' +
-      '<div class="card pad"><div class="tbl-wrap"><table><thead><tr><th class="left">个股</th><th class="left">行业/板块</th><th>竞价高开</th><th class="left">落入档位</th><th>封板概率</th><th>档位样本</th><th>实际结果</th><th>命中</th></tr></thead>' +
+    const listCard = '<div class="sec"><div class="sec-head"><h3>选股清单 · ' + E(fmtDate(j.holdoutDate)) + ' 冲击首板的股票</h3>' +
+      '<span class="small muted">按综合封板概率分层排序 · 点击名称看K线</span></div>' +
+      '<div class="card pad"><div class="ap-tier-legend"><span class="ap-rank red">重点</span> 前30% 优先研究　' +
+      '<span class="ap-rank warn">次选</span> 中间40% 观察　<span class="ap-rank">回避</span> 后30% 概率低</div>' +
+      '<div class="tbl-wrap"><table><thead><tr><th>排名</th><th class="left">个股</th><th>分层</th><th>综合概率</th><th class="left">因子分解(竞价/位置/量能/热度)</th><th>竞价高开</th><th>实际</th><th>命中</th></tr></thead>' +
       '<tbody>' + listRows + '</tbody></table></div>' +
       (list.length ? '' : '<div class="empty">该交易日无首板样本</div>') +
-      '<div class="note-box">列表是<b>已发生事实的概率复盘</b>：这些都是当日冲击首板的股票，概率来自更早交易日的历史频率，实际结果用于验证概率是否有区分度。高开≠可买，≥9.5% 近涨停开盘的个股实盘常买不进。</div></div></div>';
+      '<div class="note-box">「因子分解」显示每只票在各因子上落入的档位与其历史贡献（WoE，<span class="up">正</span>=加分/<span class="down">负</span>=减分）。' +
+      '综合概率由 4 因子加权合成；实际结果用于验证排序是否有效。<b>竞价高开≠可买，一字/近涨停开盘常买不进。</b></div></div></div>';
+
+    // 因子有效性表
+    const factorRows = factors.map(f => {
+      const icCls = f.ic === null ? '' : f.ic > 0 ? 'ap-high' : f.ic < 0 ? 'ap-low' : '';
+      const binCells = (f.bins || []).map(b => '<div class="af-bin"><span>' + E(b.label) + '</span><b>' + E(b.rate === null ? '—' : b.rate + '%') + '</b></div>').join('');
+      return '<tr><td class="left"><b>' + E(f.label) + '</b><div class="small muted">' + E(f.desc) + '</div></td>' +
+        '<td><b class="' + icCls + '">' + E(f.ic === null ? '—' : f.ic) + '</b></td>' +
+        '<td>' + E(f.spread === null ? '—' : f.spread + 'pp') + '</td>' +
+        '<td><div class="af-bins">' + binCells + '</div></td></tr>';
+    }).join('');
+    const factorCard = '<div class="card pad" style="margin-top:12px"><h4>为什么用这 4 个因子（训练样本实测）</h4>' +
+      '<div class="note-box" style="margin-bottom:8px">IC＝因子值与是否封板的相关（负=因子越大越易炸板）；档位封板率从左到右按因子值由低到高排列。' +
+      '「位置/涨幅」区分力最强，说明<b>涨太高、离均线远的票更容易炸板</b>；单一竞价高开区分力有限，所以才用多因子合成。</div>' +
+      '<div class="tbl-wrap"><table><thead><tr><th class="left">因子</th><th>IC</th><th>首尾档差</th><th class="left">各档实际封板率（低→高）</th></tr></thead>' +
+      '<tbody>' + factorRows + '</tbody></table></div></div>';
+
+    // 滚动验证表
+    const rollRows = (rolling.days || []).map(d => {
+      const aucCls = d.auc === null ? '' : d.auc >= 0.55 ? 'up' : d.auc < 0.5 ? 'down' : '';
+      return '<tr><td>' + E(fmtDate(d.date)) + '</td><td>' + E(d.n) + '</td>' +
+        '<td><b class="' + aucCls + '">' + E(d.auc === null ? '—' : d.auc) + '</b></td>' +
+        '<td>' + E(d.topRate === null ? '—' : d.topRate + '%') + '</td>' +
+        '<td>' + E(d.botRate === null ? '—' : d.botRate + '%') + '</td>' +
+        '<td>' + E(d.actualRate === null ? '—' : d.actualRate + '%') + '</td></tr>';
+    }).join('');
+    const rollCard = '<div class="card pad" style="margin-top:12px"><h4>多日滚动验证（每个交易日用它之前的数据训练，在当日预测）</h4>' +
+      '<div class="kv"><span class="k">结论</span><span class="v">' + E(rolling.note || '—') + '</span></div>' +
+      '<div class="tbl-wrap"><table><thead><tr><th>交易日</th><th>候选数</th><th>AUC</th><th>高分前30%封板</th><th>低分后30%封板</th><th>当日实际封板率</th></tr></thead>' +
+      '<tbody>' + rollRows + '</tbody></table></div>' +
+      '<div class="note-box">AUC≥0.55 视为有区分力；可见模型<b>多数日期有效、个别市场情绪异常日失效</b>。' +
+      '样本外单日（' + E(fmtDate(val.date)) + '）AUC ' + E(val.auc === null ? '—' : val.auc) + '、命中率 ' + E(val.hitRate === null ? '—' : val.hitRate + '%') +
+      ' —— ' + E(val.note || '') + '</div></div>';
 
     const metaNote = '<div class="small muted" style="margin-top:8px">数据口径：' + E(m.dataSourceNote || '') + '</div>';
-
-    $('pane-auction').innerHTML = head + banner + kpi + bucketCard + valCard + listCard + auctionMethodCard() +
+    $('pane-auction').innerHTML = head + banner + kpi + listCard + factorCard + rollCard + auctionMethodCard() +
       '<div class="disclaimer" style="margin-top:14px"><strong>免责声明</strong>：' + E(m.disclaimer || '') + '</div>' + metaNote;
 
     $('apDays').onchange = e => { S.auctionOpts.days = Number(e.target.value) || 10; loadAuction(true); };
@@ -2722,7 +2752,7 @@
   async function loadAuction(force) {
     if (S.auctionLoading) return;
     S.auctionLoading = true;
-    if (!S.auction) $('pane-auction').innerHTML = '<div class="card empty">正在回溯近 ' + S.auctionOpts.days + ' 个交易日涨停/炸板池与真实日K，回测竞价高开首板概率…</div>';
+    if (!S.auction) $('pane-auction').innerHTML = '<div class="card empty">正在回溯近 ' + S.auctionOpts.days + ' 个交易日涨停/炸板池与真实日K，训练多因子评分卡并做样本外验证…</div>';
     const q = new URLSearchParams({ days: String(S.auctionOpts.days) });
     if (force) q.set('force', '1');
     try {
@@ -2731,7 +2761,8 @@
       if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
       S.auction = j; S.auctionAt = Date.now(); S.auctionError = null;
       renderAuction();
-      $('badgeAuction').textContent = (j.list || []).length || '—';
+      const focusN = (j.list || []).filter(x => x.tier === 'focus').length;
+      $('badgeAuction').textContent = focusN || '—';
     } catch (e) {
       S.auctionError = e.message;
       $('badgeAuction').textContent = '—';

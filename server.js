@@ -1066,7 +1066,8 @@ async function buildAuction(query) {
   });
   const codeList = [...codes];
   const kdata = await limitedMap(codeList, 5, async c => {
-    try { return [c, await ds.getKline(c, 40)]; } catch (e) { return [c, []]; }
+    // 位置因子（距20日高/均线多头/近5日涨幅）需至少21根日K，取60根留足余量
+    try { return [c, await ds.getKline(c, 60)]; } catch (e) { return [c, []]; }
   });
   const klinesMap = {};
   kdata.forEach(pair => { if (pair && pair[0]) klinesMap[pair[0]] = pair[1] || []; });
@@ -1084,9 +1085,11 @@ async function buildAuction(query) {
     klineSource: ds.getKlineSource(),
     health: ds.getHealth(),
     methodology: an.AUCTION_METHOD,
+    factors: an.AUCTION_FACTORS,
+    rolling: g.validation ? g.validation.rolling : null,
     empty: !g.available,
     emptyReason: g.available ? null : (g.reason || '样本不足'),
-    dataSourceNote: '候选与封板标签=东方财富涨停池 / 炸板池（首板、剔除ST）；竞价高开幅度=腾讯前复权日K（限流时降级新浪不复权）当日开盘÷前一交易日收盘−1；概率为训练样本历史频率 + 拉普拉斯平滑，最近1个交易日样本外验证。均为免费公开接口快照，非交易所官方推送。',
+    dataSourceNote: '候选与封板标签=东方财富涨停池 / 炸板池（首板、剔除ST）；特征=腾讯前复权日K（限流时降级新浪不复权）的竞价高开、位置/涨幅、昨日量能 + 历史池上榜热度，全部盘前可知；概率=多因子 WoE 评分卡（等价分档逻辑回归）在训练样本上的拟合，最近1日样本外 + 多日滚动验证。均为免费公开接口快照，非交易所官方推送。',
     disclaimer: DISCLAIMER
   };
   return { meta, ...g };
