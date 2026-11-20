@@ -3026,7 +3026,7 @@
           const j = await r.json();
           hits = j.list || [];
           if (!hits.length) {
-            panel.innerHTML = '<div class="ss-empty">未找到匹配股票（全市场约 5,500 只，按代码 / 名称匹配）</div>';
+            panel.innerHTML = '<div class="ss-empty">未找到匹配股票（全市场约 5,500 只，可按代码 / 名称 / 拼音首字母匹配，如 dfhy）</div>';
           } else {
             panel.innerHTML = hits.map((x, i) =>
               '<div class="ss-item" data-i="' + i + '"><b>' + E(x.name) + '</b><span class="ss-code">' + E(x.code) + '</span>' +
@@ -3140,7 +3140,7 @@
       '<span class="small muted">' + E(rateNote) + '</span></div></div>';
   }
 
-  /** 分时图：价格线 + 均价线 + 昨收基准 + 成交量，纯 SVG 无额外依赖 */
+  /** 分时图：价格线（水上红 / 水下绿） + 均价线 + 昨收基准 + 成交量，纯 SVG 无额外依赖 */
   function smMinuteSvg(rows, quote, mdate) {
     if (!rows || rows.length < 2) return '<div class="empty">分时数据不足（需 ≥2 分钟），无法绘制</div>';
     const W = 1110, H = 520, L = 62, R = 68, PT = 22, PB = 388, VT = 406, VB = 498;
@@ -3150,10 +3150,38 @@
     const maxDev = Math.max(0.02, ...prices.map(p => Math.abs(p - prev) / prev));
     const hi = prev * (1 + maxDev * 1.12), lo = prev * (1 - maxDev * 1.12);
     const Y = p => PB - (p - lo) / (hi - lo) * (PB - PT);
-    const X = i => L + i / Math.max(1, rows.length - 1) * PW;
+
+    // A股交易时段 09:30–11:30、13:00–15:00 共 240 分钟，横轴按真实时间定位。
+    // 盘中只画到当前时刻，右侧剩余时段留白，不再把已有分钟拉伸铺满整幅。
+    const TOTAL = 240;
+    const TICKS = [
+      { m: 0,   t: '09:30' },
+      { m: 60,  t: '10:30' },
+      { m: 120, t: '11:30/13:00' },
+      { m: 180, t: '14:00' },
+      { m: 240, t: '15:00' }
+    ];
+    const toMin = t => {
+      const m = /^(\d{1,2}):(\d{2})$/.exec(String(t || '').trim());
+      if (!m) return null;
+      const v = (+m[1]) * 60 + (+m[2]);
+      if (v >= 570 && v <= 690) return v - 570;            // 09:30–11:30
+      if (v >= 780 && v <= 900) return 120 + (v - 780);     // 13:00–15:00
+      if (v > 555 && v < 570) return 0;                     // 9:25 竞价结果归入开盘
+      return null;
+    };
+    const mins = rows.map(x => toMin(x.time));
+    const byTime = mins.every((v, i) => v !== null && (i === 0 || v >= mins[i - 1]));
+    const tX = v => L + Math.max(0, Math.min(TOTAL, v)) / TOTAL * PW;
+    const X = byTime ? i => tX(mins[i]) : i => L + i / Math.max(1, rows.length - 1) * PW;
     const a = [];
     a.push('<svg viewBox="0 0 ' + W + ' ' + H + '" class="sm-chart-svg" preserveAspectRatio="xMidYMid meet">');
-    // 网格 + 涨跌幅刻度
+    // 竖向时间网格（中午休市分界线加深）
+    TICKS.forEach((tk, k) => {
+      const x = tX(tk.m);
+      a.push('<line x1="' + x.toFixed(1) + '" y1="' + PT + '" x2="' + x.toFixed(1) + '" y2="' + VB + '" stroke="' + (k === 2 ? '#cbd5e1' : '#eef2f7') + '" stroke-dasharray="' + (k === 2 ? '3 4' : '2 5') + '"/>');
+    });
+    // 横向网格 + 涨跌幅刻度
     for (let k = 0; k <= 4; k++) {
       const p = lo + (hi - lo) * k / 4, y = Y(p);
       const dev = (p - prev) / prev * 100;
@@ -3172,15 +3200,33 @@
     }
     // 成交量柱（每分钟）
     const maxV = Math.max(1, ...rows.map(x => x.volume || 0));
-    const bw = Math.max(1, PW / rows.length * 0.62);
+    const step = byTime ? PW / TOTAL : PW / Math.max(1, rows.length - 1);
+    const bw = Math.max(1, step * 0.62);
     rows.forEach((x, i) => {
       const h = (x.volume || 0) / maxV * (VB - VT);
-      const chg = x.price >= prev;
-      a.push('<rect x="' + (X(i) - bw / 2).toFixed(1) + '" y="' + (VB - h).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + h.toFixed(1) + '" fill="' + (chg ? '#d92b2b' : '#0f9960') + '" opacity=".55"/>');
+      a.push('<rect x="' + (X(i) - bw / 2).toFixed(1) + '" y="' + (VB - h).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + h.toFixed(1) + '" fill="' + (x.price >= prev ? 'var(--up)' : 'var(--down)') + '" opacity=".55"/>');
     });
-    // 价格线
-    const pts = rows.map((x, i) => X(i).toFixed(1) + ',' + Y(x.price).toFixed(1)).join(' ');
-    a.push('<polyline points="' + pts + '" fill="none" stroke="#1f4e8c" stroke-width="1.8"/>');
+    // 价格线：以昨收为界，水上红色 / 水下绿色，穿越处按线性插值分段
+    const segUp = [], segDown = [];
+    const pt = (s, x, y, move) => s.push((move ? 'M' : 'L') + x.toFixed(1) + ' ' + y.toFixed(1));
+    let side = prices[0] >= prev ? 'up' : 'down';
+    pt(side === 'up' ? segUp : segDown, X(0), Y(prices[0]), true);
+    for (let i = 1; i < rows.length; i++) {
+      const p0 = prices[i - 1], p1 = prices[i];
+      const x0 = X(i - 1), x1 = X(i);
+      const up0 = p0 >= prev, up1 = p1 >= prev;
+      if (up0 === up1) {
+        pt(side === 'up' ? segUp : segDown, x1, Y(p1), false);
+      } else {
+        const cross = x0 + (x1 - x0) * ((prev - p0) / (p1 - p0));
+        pt(side === 'up' ? segUp : segDown, cross, Y(prev), false);
+        side = up1 ? 'up' : 'down';
+        pt(side === 'up' ? segUp : segDown, cross, Y(prev), true);
+        pt(side === 'up' ? segUp : segDown, x1, Y(p1), false);
+      }
+    }
+    if (segUp.length) a.push('<path d="' + segUp.join(' ') + '" fill="none" stroke="var(--up)" stroke-width="1.8" stroke-linejoin="round"/>');
+    if (segDown.length) a.push('<path d="' + segDown.join(' ') + '" fill="none" stroke="var(--down)" stroke-width="1.8" stroke-linejoin="round"/>');
     // 均价线（累计成交额 / 累计成交量 / 100，与腾讯口径一致）
     let amt = 0, vol = 0;
     const avgPts = rows.map((x, i) => {
@@ -3190,12 +3236,45 @@
       return X(i).toFixed(1) + ',' + Y(avg).toFixed(1);
     }).join(' ');
     a.push('<polyline points="' + avgPts + '" fill="none" stroke="#d97706" stroke-width="1.5" stroke-dasharray="3 2"/>');
-    // 时间轴
-    [0, Math.floor(rows.length / 4), Math.floor(rows.length / 2), Math.floor(rows.length * 3 / 4), rows.length - 1].forEach(i => {
-      a.push('<text x="' + X(i).toFixed(1) + '" y="' + (VB + 15) + '" font-size="10.5" fill="#6b7a8c" text-anchor="middle">' + E(rows[i].time) + '</text>');
+    // 时间轴：固定交易时段刻度
+    TICKS.forEach((tk, k) => {
+      const anchor = k === 0 ? 'start' : (k === TICKS.length - 1 ? 'end' : 'middle');
+      a.push('<text x="' + tX(tk.m).toFixed(1) + '" y="' + (VB + 15) + '" font-size="10.5" fill="#6b7a8c" text-anchor="' + anchor + '">' + tk.t + '</text>');
     });
     a.push('<text x="' + L + '" y="14" font-size="10.5" fill="#8593a3">分时价格 / 均价 · ' + E(mdate || '最近交易日') + ' · 腾讯证券</text>');
+    a.push('<circle cx="' + (W - R - 128) + '" cy="10.5" r="3" fill="var(--up)"/><text x="' + (W - R - 120) + '" y="14" font-size="10" fill="#8593a3">昨收上</text>');
+    a.push('<circle cx="' + (W - R - 62) + '" cy="10.5" r="3" fill="var(--down)"/><text x="' + (W - R - 54) + '" y="14" font-size="10" fill="#8593a3">昨收下</text>');
     a.push('<text x="' + L + '" y="' + (VT - 6) + '" font-size="10.5" fill="#8593a3">成交量（手）</text>');
+    a.push('</svg>');
+    return a.join('');
+  }
+
+  /** 资金流柱状图：主力净流入（超大单+大单），红涨绿跌，与K线同一时间窗对齐 */
+  function smFundSvg(fundRows, view, period) {
+    const rows = fundRows || [];
+    if (rows.length < 3) return '<div class="empty">资金流数据不足，无法绘制</div>';
+    const W = 1110, H = 118, L = 62, R = 24, PT = 20, PB = 100;
+    const PW = W - L - R;
+    // 与K线共享可见窗口：资金日线通常比K线多，用日期对齐取最后 N 根
+    const count = Math.max(10, Math.min(view && view.count ? view.count : 60, rows.length));
+    const vis = rows.slice(-count);
+    const n = vis.length, cw = PW / n, bw = Math.max(1.4, Math.min(16, cw * 0.6));
+    const vals = vis.map(x => Number(x.main) || 0);
+    const mx = Math.max(1, ...vals.map(Math.abs));
+    const Y = v => (PT + PB) / 2 - v / mx * ((PB - PT) / 2);
+    const a = ['<svg viewBox="0 0 ' + W + ' ' + H + '" class="sm-fund-svg" preserveAspectRatio="none">'];
+    a.push('<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="#fff"/>');
+    a.push('<line x1="' + L + '" y1="' + Y(0).toFixed(1) + '" x2="' + (W - R) + '" y2="' + Y(0).toFixed(1) + '" stroke="#dbe3ec"/>');
+    a.push('<text x="6" y="' + (Y(mx) + 4).toFixed(1) + '" font-size="10" fill="#8593a3">+' + (mx / 1e8).toFixed(2) + '亿</text>');
+    a.push('<text x="6" y="' + (Y(-mx) + 4).toFixed(1) + '" font-size="10" fill="#8593a3">-' + (mx / 1e8).toFixed(2) + '亿</text>');
+    a.push('<text x="' + L + '" y="12" font-size="10.5" fill="#6d4bd6">主力净流入（超大单+大单）· ' + E(period === 'week' ? '周' : '日') + '</text>');
+    vis.forEach((x, i) => {
+      const v = vals[i], y = Y(v), cx = L + cw * (i + 0.5);
+      const color = v >= 0 ? '#d92b2b' : '#0f9960';
+      a.push('<rect x="' + (cx - bw / 2).toFixed(1) + '" y="' + Math.min(y, Y(0)).toFixed(1) + '" width="' + bw.toFixed(1) +
+        '" height="' + Math.max(1, Math.abs(Y(0) - y)).toFixed(1) + '" fill="' + color + '" opacity=".82"><title>' +
+        E(x.date) + ' 主力净额 ' + (v / 1e8).toFixed(2) + ' 亿 · 占比 ' + N(x.mainPct) + '% · 收盘 ' + N(x.close) + '</title></rect>');
+    });
     a.push('</svg>');
     return a.join('');
   }
@@ -3211,9 +3290,16 @@
       $('smSource').textContent = '分时 · ' + E(md.source || '来源不可用') + (md.date ? ' · 交易日 ' + E(String(md.date)) : '') +
         ' · 数据拉取 ' + E(String(md.asOf || '').slice(11, 19)) +
         (trading ? ' · 每 12 秒自动刷新' : ' · 已收盘（静态）');
-      $('smBody').innerHTML = md.rows && md.rows.length
+      const fn = (j.fund && j.fund.now) || {};
+      const fundBar = Number.isFinite(fn.main) && fn.main !== null
+        ? '<div class="sm-fund-now">当日资金：<span class="' + (fn.main >= 0 ? 'up' : 'down') + '">主力净额 ' +
+          (fn.main / 1e8).toFixed(2) + ' 亿</span><span class="small muted">（超大单 ' +
+          (fn.huge !== null ? (fn.huge / 1e8).toFixed(2) + ' 亿' : '—') + ' / 大单 ' +
+          (fn.big !== null ? (fn.big / 1e8).toFixed(2) + ' 亿' : '—') + '）· ' + E(fn.source || '') + '</span></div>'
+        : '';
+      $('smBody').innerHTML = fundBar + (md.rows && md.rows.length
         ? '<div class="sm-minute-chart">' + smMinuteSvg(rows, q, md.date) + '</div>'
-        : '<div class="empty">' + E(md.reason || '分时数据暂不可用') + '</div>';
+        : '<div class="empty">' + E(md.reason || '分时数据暂不可用') + '</div>');
       $('smFoot').innerHTML = '<div class="note-box">分时数据来自腾讯证券公开接口（每分钟价格 / 成交量 / 成交额，服务端缓存 60 秒）；均价线＝累计成交额 ÷ 累计成交量，与行情软件口径一致。' +
         (trading
           ? '<b>当前为交易时段，每 12 秒自动重拉分时</b>；盘后自动停止。'
@@ -3222,6 +3308,8 @@
         '图中的紫色虚线是 9:25 竞价成交价（即开盘价' + (q.open > 0 ? ' ' + N(q.open) : '，当前快照未取得') + '），' +
         '竞价涨跌幅 ' + (q.open > 0 && q.prevClose > 0 ? (q.open > q.prevClose ? '+' : '') + N((q.open - q.prevClose) / q.prevClose * 100) + '%' : '—') +
         '；竞价期间的委托撤单过程不展示。' +
+        '<br><b>看图口径：</b>价格线以昨收价（灰色虚线）为界，<b style="color:var(--up)">水上红色</b>、<b style="color:var(--down)">水下绿色</b>；横轴为固定交易时段，盘中曲线只画到当前时刻、右侧留白。' +
+        '<b>DDX / DDZ 为第三方专有算法指标，公开接口无法取得真实序列，系统不提供估算值</b>；此处用真实的特大单/大单资金快照替代。' +
         '<b>分钟级数据，不是逐笔成交，不构成投资建议。</b></div>';
       syncMinuteTimer();
       return;
@@ -3284,6 +3372,11 @@
         '<div class="sm-svg-wrap" id="smSvgWrap">' + ksvg +
           '<div class="sm-hover-panel" id="smHoverPanel" style="display:none"></div>' +
         '</div>' +
+        (j.fund && j.fund[per] && j.fund[per].rows && j.fund[per].rows.length
+          ? '<div class="sm-fund-block"><div class="sm-block-head"><h4>主力资金流向</h4>' +
+            '<span class="small muted">' + E(j.fund.source || j.fund[per].source || '东方财富资金流') + ' · 红=净流入 / 绿=净流出</span></div>' +
+            smFundSvg(j.fund[per].rows, S.chart.view, per) + '</div>'
+          : '') +
         '<div class="sm-k-hint">滚轮缩放 · 按住拖动平移 · 移动鼠标看某日数据 · 单击锁定 / 双击重置</div></div>' +
         '<div class="sm-chart-block sm-chip-block"><div class="sm-block-head"><h4>筹码峰分布</h4>' +
         '<span class="small muted">模型估算 · 与左图价格轴对齐</span></div>' +
@@ -3293,7 +3386,8 @@
     // 底部方法论与免责
     const m = j.method || {};
     $('smFoot').innerHTML =
-      '<div class="note-box">' + E(m.day || '') + ' ' + E(m.week || '') + ' ' + E(m.chip || '') + '</div>' +
+      '<div class="note-box">' + E(m.day || '') + ' ' + E(m.week || '') + ' ' + E(m.chip || '') +
+      '<br><b>资金流：</b>' + E((j.fund && j.fund.note) || '主力净流入=超大单+大单净额（东方财富口径）。') + '</div>' +
       '<div class="small muted" style="margin-top:6px">' + E((j.meta || {}).disclaimer || '') + '</div>';
     if (chip) bindChipHover();
     if (bars.length >= 6) bindKlineInteractions();

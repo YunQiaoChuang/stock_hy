@@ -14,6 +14,7 @@ dns.setDefaultResultOrder('ipv4first');
 
 const ds = require('./lib/datasource');
 const an = require('./lib/analytics');
+const py = require('./lib/pinyin');
 
 // 默认 8899：8787 常与其它本地服务冲突；可用环境变量 PORT 覆盖
 // 若目标端口被占用，启动时自动顺延到下一个可用端口（最多 15 次），并在控制台打印实际地址
@@ -403,12 +404,15 @@ async function getStockChart(query) {
   if (!/^\d{6}$/.test(code)) return { error: '缺少有效的 6 位股票代码', code: code || null };
   const t0 = Date.now();
   const dayLimit = 160, weekLimit = 80;
-  const [day, week, quotes, minute] = await Promise.all([
+  const [day, week, quotes, minute, fundHistory, fundNow] = await Promise.all([
     ds.getKlineData(code, dayLimit).catch(() => ({ rows: [], source: null, adjusted: null })),
     ds.getPeriodKline(code, 'week', weekLimit).catch(() => ({ rows: [], source: null, adjusted: false })),
     ds.getQQQuotes([code]).catch(() => ({})),
-    ds.getMinute(code).catch(() => ({ rows: [], source: null, reason: '分时接口暂不可用' }))
+    ds.getMinute(code).catch(() => ({ rows: [], source: null, reason: '分时接口暂不可用' })),
+    ds.getFundHistory(code, 160).catch(() => ({ rows: [], source: null, reason: '资金流历史暂不可用' })),
+    ds.getStockFundNow(code).catch(() => ({ source: null, reason: '资金快照暂不可用' }))
   ]);
+  const fundWeek = ds.weeklyFund(fundHistory.rows || []).slice(-weekLimit);
   const q = quotes[code] || {};
   const price = Number(q.price) > 0 ? Number(q.price) : (day.rows.length ? day.rows[day.rows.length - 1].close : null);
   const chipOpts = { price, floatCap: Number(q.floatCap) > 0 ? Number(q.floatCap) : null, period: 'day', limit: 120 };
@@ -434,6 +438,12 @@ async function getStockChart(query) {
     day: { rows: day.rows, source: day.source, adjusted: day.adjusted, asOf: day.asOf },
     week: { rows: week.rows, source: week.source, adjusted: week.adjusted, asOf: week.asOf, reason: week.reason || null },
     minute: { rows: minute.rows || [], source: minute.source || null, date: minute.date || null, asOf: minute.asOf || null, reason: minute.reason || null },
+    fund: {
+      day: { rows: fundHistory.rows || [], source: fundHistory.source || null, reason: fundHistory.reason || null, name: fundHistory.name || null },
+      week: { rows: fundWeek, source: fundHistory.source || null, reason: fundHistory.reason || null },
+      note: '主力净流入=超大单+大单净额（东方财富口径）；周线为真实日线按自然周加总。DDX/DDZ 为第三方专有算法指标，公开接口无法取得真实序列，系统不提供估算值。',
+      now: fundNow || {}
+    },
     chip: { day: chipDay, week: chipWeek },
     method: {
       day: '日K：腾讯证券前复权优先，限流时自动降级新浪财经不复权；来源见各周期 source 字段。',
@@ -1168,13 +1178,26 @@ const server = http.createServer(async (req, res) => {
       const uni = await ds.getUniverse().catch(() => ({ list: [] }));
       const k = kw.toLowerCase();
       const numeric = /^\d+$/.test(k);
-      const list = (uni.list || []).filter(x =>
-        numeric ? String(x.code).includes(k) : (String(x.name || '').toLowerCase().includes(k) || String(x.code).includes(k))
-      ).sort((a, b) => {
-        // 精确匹配优先，其次代码前缀，再按涨幅
-        const score = x => (String(x.code) === k ? 4 : String(x.name || '').toLowerCase() === k ? 3 : String(x.code).startsWith(k) ? 2 : 1);
-        return score(b) - score(a) || (Number(b.pct) || 0) - (Number(a.pct) || 0);
-      }).slice(0, 12).map(x => ({
+      const pyMode = /^[a-z]+$/.test(k); // 纯字母：按拼音首字母匹配（含 ST 前缀）
+      // 打分：精确 > 前缀 > 包含；拼音与代码/名称同分档时按涨幅排序
+      const score = x => {
+        const code = String(x.code || ''), name = String(x.name || '').toLowerCase();
+        if (code === k) return 8;
+        if (name === k) return 7;
+        if (numeric) return code.includes(k) ? (code.startsWith(k) ? 6 : 3) : 0;
+        if (pyMode) {
+          const ini = py.initialsOf(name);
+          if (!ini) return 0;
+          if (ini === k) return 7;
+          if (ini.startsWith(k)) return 6;
+          return ini.includes(k) ? 4 : 0;
+        }
+        if (name.includes(k)) return code.startsWith(k) ? 6 : 4;
+        return code.includes(k) ? 3 : 0;
+      };
+      const list = (uni.list || []).filter(x => score(x) > 0)
+        .sort((a, b) => score(b) - score(a) || (Number(b.pct) || 0) - (Number(a.pct) || 0))
+        .slice(0, 12).map(x => ({
         code: x.code, name: x.name, price: x.price, pct: x.pct,
         board: x.board, industry: x.industry || null, floatCap: x.floatCap
       }));
