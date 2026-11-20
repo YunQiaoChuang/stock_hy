@@ -738,3 +738,31 @@ tbody tr.dg-edge-row:hover td{background:var(--edge-bg)}
   .sm-chip-body .sm-chip-stats{grid-template-columns:repeat(2,1fr)}
   .sm-clr-grid{grid-template-columns:repeat(3,1fr)}
 }
+
+/* ═══ 集合竞价 · 首板封板概率模块 ═══ */
+.btn-ghost{background:#fff;border-color:var(--line);color:var(--ink2)}
+.btn-ghost:hover{border-color:var(--blue2);color:var(--blue2)}
+.btn-sm{padding:5px 10px;font-size:11.5px}
+.sel-sm{border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:7px;padding:5px 8px;font-size:11.5px;font-family:inherit;outline:none}
+.ap-high{color:var(--up)!important}
+.ap-mid{color:var(--warn)!important}
+.ap-low{color:var(--blue2)!important}
+#pane-auction .dg-kpi-grid{grid-template-columns:repeat(4,1fr)}
+#pane-auction .conclusion{border-left:4px solid var(--blue2);padding:11px 14px}
+@media(max-width:900px){#pane-auction .dg-kpi-grid{grid-template-columns:repeat(2,1fr)}}
+
+/* ═══ 集合竞价 · 多因子选股视图 ═══ */
+.ap-tier-legend{padding:8px 10px;margin-bottom:8px;background:var(--bg2,#f6f8fb);border-radius:7px;font-size:11.5px;color:var(--ink2)}
+.ap-rank{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:22px;padding:0 5px;border-radius:6px;background:var(--line,#e3e8ef);color:var(--ink2);font-weight:700;font-size:11px}
+.ap-rank.red{background:var(--up);color:#fff}
+.ap-rank.warn{background:var(--warn);color:#fff}
+.ap-chips{display:flex;flex-wrap:wrap;gap:4px}
+.af-chip{display:inline-flex;align-items:center;gap:3px;padding:2px 6px;border-radius:5px;font-size:10.5px;line-height:1.5;border:1px solid var(--line);background:#fff;color:var(--ink2);white-space:nowrap}
+.af-chip i{font-style:normal;font-weight:700;font-size:10px}
+.af-chip.ap-high{color:var(--up);border-color:var(--up)}
+.af-chip.ap-mid{color:var(--warn);border-color:var(--warn)}
+.af-chip.ap-low{color:var(--blue2);border-color:var(--blue2)}
+.ap-row:hover{background:var(--bg2,#f6f8fb)}
+.af-bins{display:flex;gap:5px;flex-wrap:wrap}
+.af-bin{display:flex;flex-direction:column;align-items:center;min-width:52px;padding:4px 6px;border-radius:6px;background:var(--bg2,#f6f8fb);font-size:10px;color:var(--muted,#6b7a8c)}
+.af-bin b{font-size:11.5px;color:var(--ink);margin-top:2px}

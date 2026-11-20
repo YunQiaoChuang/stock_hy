@@ -1040,6 +1040,76 @@ async function getEnlightenment(query, force) {
   return enlightenCache.inflight;
 }
 
+/* ─────────── 集合竞价 · 首板封板概率（历史回测） ─────────── */
+const auctionCache = { at: 0, key: '', value: null, inflight: null };
+
+async function buildAuction(query) {
+  const t0 = Date.now();
+  const f = { ...query };
+  delete f._; delete f.force;
+  const days = Math.min(15, Math.max(5, Number(f.days) || 10));
+  const history = await ds.getPoolFullHistory(days).catch(() => ({ dates: [], byDate: {}, note: '' }));
+  const dates = history.dates || [];
+  if (!dates.length) {
+    return {
+      meta: { generatedAt: new Date().toISOString(), elapsedMs: Date.now() - t0, poolDates: [], klineSource: ds.getKlineSource(), health: ds.getHealth(), disclaimer: DISCLAIMER },
+      available: false, reason: '东方财富历史涨停池未返回可用交易日，无法回测竞价首板概率；系统不填充推测数据。',
+      buckets: [], list: [], validation: null, method: an.AUCTION_METHOD
+    };
+  }
+  // 收集所有交易日首板（含炸板）代码，去重后并发拉日K（供竞价 gap 计算）
+  const codes = new Set();
+  dates.forEach(d => {
+    const day = history.byDate[d.date] || {};
+    (day.zt || []).concat(day.zb || []).forEach(x => {
+      if (x && !x.isST && (Number(x.boards) || 1) === 1 && x.code) codes.add(x.code);
+    });
+  });
+  const codeList = [...codes];
+  const kdata = await limitedMap(codeList, 5, async c => {
+    // 位置因子（距20日高/均线多头/近5日涨幅）需至少21根日K，取60根留足余量
+    try { return [c, await ds.getKline(c, 60)]; } catch (e) { return [c, []]; }
+  });
+  const klinesMap = {};
+  kdata.forEach(pair => { if (pair && pair[0]) klinesMap[pair[0]] = pair[1] || []; });
+
+  const g = an.auctionFirstBoard(history, klinesMap, { minN: 3, smooth: 1 });
+  const klinesOk = codeList.filter(c => Array.isArray(klinesMap[c]) && klinesMap[c].length > 1).length;
+  const meta = {
+    ...beijingNow(),
+    generatedAt: new Date().toISOString(),
+    elapsedMs: Date.now() - t0,
+    poolDates: dates.map(d => d.date),
+    days,
+    candidates: codeList.length,
+    klinesOk,
+    klineSource: ds.getKlineSource(),
+    health: ds.getHealth(),
+    methodology: an.AUCTION_METHOD,
+    factors: an.AUCTION_FACTORS,
+    rolling: g.validation ? g.validation.rolling : null,
+    empty: !g.available,
+    emptyReason: g.available ? null : (g.reason || '样本不足'),
+    dataSourceNote: '候选与封板标签=东方财富涨停池 / 炸板池（首板、剔除ST）；特征=腾讯前复权日K（限流时降级新浪不复权）的竞价高开、位置/涨幅、昨日量能 + 历史池上榜热度，全部盘前可知；概率=多因子 WoE 评分卡（等价分档逻辑回归）在训练样本上的拟合，最近1日样本外 + 多日滚动验证。均为免费公开接口快照，非交易所官方推送。',
+    disclaimer: DISCLAIMER
+  };
+  return { meta, ...g };
+}
+
+async function getAuction(query, force) {
+  const key = JSON.stringify({ days: query.days || '' });
+  if (!force && auctionCache.value && auctionCache.key === key && Date.now() - auctionCache.at < 600000) return auctionCache.value;
+  if (auctionCache.inflight) return auctionCache.inflight;
+  auctionCache.inflight = (async () => {
+    try {
+      const v = await buildAuction(query);
+      auctionCache.value = v; auctionCache.key = key; auctionCache.at = Date.now();
+      return v;
+    } finally { auctionCache.inflight = null; }
+  })();
+  return auctionCache.inflight;
+}
+
 /* ─────────── 路由 ─────────── */
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://localhost:' + ACTIVE_PORT);
@@ -1090,6 +1160,7 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === '/api/dragon/review') return sendJson(res, await getDragonReview(q, q.force === '1'));
     if (u.pathname === '/api/news') return sendJson(res, await getNews(q, q.force === '1'));
     if (u.pathname === '/api/enlightenment') return sendJson(res, await getEnlightenment(q, q.force === '1'));
+    if (u.pathname === '/api/auction') return sendJson(res, await getAuction(q, q.force === '1'));
     if (u.pathname === '/api/health') return sendJson(res, { ...beijingNow(), port: ACTIVE_PORT, health: ds.getHealth(), ai: aiStatus(), disclaimer: DISCLAIMER });
     if (u.pathname === '/api/search') {
       const kw = String(q.q || '').trim();
