@@ -88,7 +88,8 @@
     dgOfflineTimer: null,
     auction: null, auctionLoading: false, auctionError: null, auctionAt: 0,
     auctionOpts: { days: 10 }, auctionMethodOpen: false,
-    ladderDate: null, ladderData: null, ladderDates: [], ladderLoading: false,
+    ladderDate: null, ladderData: null, ladderDates: [], ladderLoading: false, ladderKind: 'zt',
+    predict: null, predictLoading: false, predictOpts: { date: '' }, predictMethodOpen: false,
     news: null, newsLoading: false, newsError: null, newsAt: 0, newsSince: null,
     newsInterval: 30, newsWindow: 72, newsPaused: false, newsFilter: 'all',
     newsKeyword: '', newsMethodOpen: false, newsShowAll: false,
@@ -148,13 +149,20 @@
     if ($('smClose')) $('smClose').onclick = closeStockChart;
     initStockSearch();
     [...document.querySelectorAll('.sm-tab')].forEach(b => {
-      b.onclick = () => { if (S.chart.data && b.dataset.period !== S.chart.period) { S.chart.period = b.dataset.period; S.chart.view = null; S.chart.lockIdx = null; if (S.chart.period !== 'minute') stopMinuteTimer(); renderStockChart(); } };
+      b.onclick = () => {
+        if (!S.chart.data || b.dataset.period === S.chart.period) return;
+        S.chart.period = b.dataset.period; S.chart.view = null; S.chart.lockIdx = null;
+        // 切走分时即退出"历史某日"查看，回到当日分时数据
+        if (b.dataset.period !== 'minute') S.chart.histDate = null;
+        if (S.chart.period !== 'minute') stopMinuteTimer();
+        renderStockChart();
+      };
     });
     loadBoards();
     initLadderDates();
     const qs = new URLSearchParams(location.search);
     const initTab = qs.get('tab');
-    if (initTab && ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'auction', 'enlighten'].indexOf(initTab) >= 0) switchTab(initTab);
+    if (initTab && ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'auction', 'predict', 'enlighten'].indexOf(initTab) >= 0) switchTab(initTab);
     // 深链：?stock=000001&period=week 直接打开个股K线弹窗
     const initStock = qs.get('stock');
     if (/^\d{6}$/.test(initStock || '')) {
@@ -321,7 +329,7 @@
   function switchTab(t) {
     S.tab = t;
     [...$('tabs').children].forEach(c => c.classList.toggle('active', c.dataset.tab === t));
-    ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'auction', 'enlighten'].forEach(k => $('pane-' + k).classList.toggle('active', k === t));
+    ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'auction', 'predict', 'enlighten'].forEach(k => $('pane-' + k).classList.toggle('active', k === t));
     if (t === 'pullback' && !S.pull && !S.pullLoading) loadPullback(false);
     if (t === 'dragon') {
       const histParam = new URLSearchParams(location.search).get('hist');
@@ -333,6 +341,7 @@
     } else stopNewsMonitor();
     if (t === 'enlighten' && !S.en && !S.enLoading) loadEnlightenment(false);
     if (t === 'auction' && !S.auction && !S.auctionLoading) loadAuction(false);
+    if (t === 'predict' && !S.predict && !S.predictLoading) loadPredict(false);
     setTimeout(() => { Object.values(S.charts || {}).forEach(c => { try { c.resize(); } catch (e) { } }); }, 60);
   }
 
@@ -358,6 +367,7 @@
     if (S.pull) $('badgePull').textContent = (S.pull.list || []).length;
     if (S.en) $('badgeEn').textContent = (S.en.best ? String(S.en.best.name).slice(0, 6) : '已回测');
     if (S.auction) $('badgeAuction').textContent = (S.auction.list || []).length || '—';
+    if (S.predict) $('badgePredict').textContent = (S.predict.summary && S.predict.summary.focus) || '—';
   }
 
   function renderMeta(m, ov) {
@@ -459,18 +469,33 @@
     const roleCls = r => r === '板块龙头' ? 'lead' : r === '反包核心' || r === '题材龙' || r === '封单核心' ? 'core' : r === '独苗' ? 'solo' : '';
     const stockCell = x => {
       const seal = Number(x.sealFundRatio) || 0, br = Number(x.brokenCount) || 0;
-      const cls = seal >= 1 ? 'em-seal strong' : seal >= 0.3 ? 'em-seal mid' : 'em-seal weak';
+      const clsPct = seal >= 1 ? 'em-seal strong' : seal >= 0.3 ? 'em-seal mid' : 'em-seal weak';
       const sealCls = br === 0 ? 'em-br none' : br <= 2 ? 'em-br some' : 'em-br many';
       const sr = sectorRole.get(x.code) || { role: '', reason: '' };
       const edge = dgEdgeOf(x.dragonEdge);
+      // 历史回放的标记由 /api/ladder 按「截至该日」的窗口重新计算，不使用今日回测结果
+      const seed = x.seedMark || null;
+      let cardCls = 'em-stock', corner = '', style = '';
+      if (edge) {
+        cardCls += ' dg-edge edge-' + E(edge.key);
+        corner = ' data-edge-corner="★ ' + E(edge.label) + ' ' + E(edge.rate) + '"';
+        style = ' style="' + dgEdgeStyle(edge) + '"';
+      }
+      if (seed && (seed.tier === 'seed' || seed.tier === 'watch')) {
+        cardCls += ' fs-mark fs-' + E(seed.tier);
+        corner = ' data-seed-corner="★ 晋级 ' + E(seed.prob) + '%"';
+        style = ' style="--fs:' + E(seed.color) + ';--fs-bg:' + E(seed.bg) + '"';
+      }
       const ttl = x.name + '(' + x.code + ') · ' + (x.industry || '—') + '\n板块地位：' + sr.role + '（' + sr.reason + '）' +
-        (edge ? '\n历史优势组合：' + dgEdgeTitle(edge) : '');
-      return '<div class="em-stock' + (edge ? ' dg-edge edge-' + E(edge.key) + '" data-edge-corner="★ ' + E(edge.label) + ' ' + E(edge.rate) + '" style="' + dgEdgeStyle(edge) : '') + '" title="' + E(ttl) + '">' +
+        (edge ? '\n历史优势组合：' + dgEdgeTitle(edge) : '') +
+        (seed ? '\n首板种子：' + seed.label + '，历史晋级 ' + seed.prob + '% / 成龙 ' + seed.dragonProb +
+          '%（命中 ' + seed.score + ' 项：' + seed.reasons.join('、') + '）' : '');
+      return '<div class="' + cardCls + '"' + corner + style + ' title="' + E(ttl) + '">' +
         '<div class="em-stock-head"><b>' + sn(x.code, x.name) + '</b><span class="em-code">' + E(x.code) + '</span></div>' +
         '<div class="em-stock-ind">' + E(x.industry || '—') +
         (sr.role ? '<span class="em-role ' + roleCls(sr.role) + '">' + E(sr.role) + '</span>' : '') + '</div>' +
         '<div class="em-stock-meta"><span>首封 ' + E(x.firstSeal || '—') + '</span>' +
-        '<span class="' + cls + '">封 ' + N(seal) + '%</span></div>' +
+        '<span class="' + clsPct + '">封 ' + N(seal) + '%</span></div>' +
         '<div class="em-stock-meta"><span class="' + sealCls + '">' + (br === 0 ? '零炸板' : '炸板 ' + br + ' 次') + '</span>' +
         '<span>换手 ' + N(x.turnover) + '%</span></div></div>';
     };
@@ -483,6 +508,58 @@
         (b === Number(ov.maxBoard) && b >= 2 ? '<span class="em-tier-mark">空间板</span>' : '') +
         '</div><div class="em-stocks">' + list.map(stockCell).join('') + '</div></div>';
     }).join('');
+
+    /* ── 跌停天梯：跌停池无连板层级（boards 恒 1），改用「跌停封单强度」分层；
+          同时按东财行业归属统计跌停家数，标注跌停最集中的板块（题材映射无稳定来源，不臆造） ── */
+    const dtAll = ladderIsHistory ? (S.ladderData.dt || []) : (d.limitDownPool || []);
+    // 行业跌停家数统计，找出家数最多的板块（可能并列）
+    const dtIndustry = new Map();
+    dtAll.forEach(x => { const k = x.industry || '未分类'; dtIndustry.set(k, (dtIndustry.get(k) || 0) + 1); });
+    const dtMaxCount = dtIndustry.size ? Math.max(...dtIndustry.values()) : 0;
+    const dtTopIndustries = [...dtIndustry.entries()].filter(([, n]) => n === dtMaxCount).map(([k]) => k);
+    // 封单强度分层：封单额/流通市值%。阈值按跌停池实测分布设定，从高到低
+    const dtTiers = [
+      { key: 'dt-tier-3', name: '一字锁死', desc: '封单 ≥3%，几乎无撬板', test: v => v >= 3 },
+      { key: 'dt-tier-2', name: '强封跌停', desc: '封单 1%~3%，封板较牢', test: v => v >= 1 && v < 3 },
+      { key: 'dt-tier-1', name: '普通跌停', desc: '封单 0.3%~1%', test: v => v >= 0.3 && v < 1 },
+      { key: 'dt-tier-0', name: '弱封 / 易撬', desc: '封单 <0.3%，随时可能开板', test: v => v < 0.3 }
+    ];
+    const dtTierOf = x => {
+      const v = Number(x.sealFundRatio) || 0;
+      return dtTiers.find(t => t.test(v)) || dtTiers[dtTiers.length - 1];
+    };
+    const dtCell = x => {
+      const seal = Number(x.sealFundRatio) || 0;
+      const ind = x.industry || '未分类';
+      const hot = dtMaxCount >= 2 && dtTopIndustries.indexOf(ind) >= 0;
+      const ttl = x.name + '(' + x.code + ') · ' + ind + '\n封单比 ' + N(seal) + '%（封单额 / 流通市值）' +
+        '\n最后封板 ' + (x.lastSeal || '—') + ' · 炸板 ' + (Number(x.brokenCount) || 0) + ' 次 · 换手 ' + N(x.turnover) + '%' +
+        (hot ? '\n⚠ 所属板块为当日跌停最集中板块（' + ind + ' ' + dtMaxCount + ' 家）' : '');
+      return '<div class="em-stock dt-stock' + (hot ? ' dt-hot' : '') + '" title="' + E(ttl) + '">' +
+        '<div class="em-stock-head"><b>' + sn(x.code, x.name) + '</b><span class="em-code">' + E(x.code) + '</span></div>' +
+        '<div class="em-stock-ind">' + E(ind) +
+        (hot ? '<span class="dt-hot-tag">最多跌停 ' + dtMaxCount + ' 家</span>' : '') + '</div>' +
+        '<div class="em-stock-meta"><span>封 ' + N(seal) + '%</span>' +
+        '<span>' + (Number(x.brokenCount) > 0 ? '撬板 ' + x.brokenCount + ' 次' : '未撬板') + '</span></div>' +
+        '<div class="em-stock-meta"><span>末封 ' + E(x.lastSeal || '—') + '</span>' +
+        '<span>换手 ' + N(x.turnover) + '%</span></div></div>';
+    };
+    const dtTiersHtml = dtTiers.map(t => {
+      const list = dtAll.filter(x => dtTierOf(x).key === t.key).slice()
+        .sort((a, c) => (Number(c.sealFundRatio) || 0) - (Number(a.sealFundRatio) || 0));
+      if (!list.length) return '';
+      return '<div class="em-tier dt-tier ' + t.key + '"><div class="em-tier-head">' +
+        '<span class="em-tier-badge">' + t.name + '</span><span class="em-tier-count">' + list.length + ' 家</span>' +
+        '<span class="dt-tier-desc">' + t.desc + '</span>' +
+        '</div><div class="em-stocks">' + list.map(dtCell).join('') + '</div></div>';
+    }).join('');
+    const dtSummary = dtAll.length
+      ? '<div class="dt-summary">' + tag('跌停 ' + dtAll.length + ' 家', 'green') +
+        (dtTopIndustries.length
+          ? tag('最多跌停板块：' + dtTopIndustries.join(' / ') + ' ' + dtMaxCount + ' 家', 'warn')
+          : '') +
+        '<span class="small muted">按东财行业归属统计（无稳定题材映射，不臆造）</span></div>'
+      : '';
 
     const themes = (rv.topThemes || []).map(t =>
       '<div class="info-card theme-card"><h4>' + E(t.name) + ' <span class="mini-tag">' + t.count + ' 只涨停</span></h4>' +
@@ -574,21 +651,32 @@
     $('pane-review').innerHTML =
       '<div class="sec"><div class="sec-head"><h3>一、盘面结构与状态诊断</h3>' + src('新浪财经全市场快照 / 腾讯证券指数 / 东方财富涨停池，时点 ' + TICK(m)) + '</div>' +
       '<div class="grid2"><div class="card pad"><div class="fact-list">' + facts + '</div></div>' +
-      '<div class="card pad"><div class="em-ladder-head"><h4 style="font-size:12.5px;margin-bottom:6px">连板天梯 <span class="small muted" style="font-weight:400">（东方财富式 · 按板级分层）</span></h4>' +
-      '<select class="sel" id="ladderDate" title="切换交易日回看历史连板天梯">' +
+      '<div class="card pad"><div class="em-ladder-head">' +
+      '<h4 style="font-size:12.5px;margin-bottom:6px">天梯 <span class="small muted" style="font-weight:400">' +
+      (S.ladderKind === 'dt' ? '（跌停封单强度分层 · 标注最多跌停板块）' : '（东方财富式 · 按板级分层）') + '</span></h4>' +
+      '<div class="ld-ctrl">' +
+      '<div class="ld-tabs"><button type="button" class="ld-tab' + (S.ladderKind === 'zt' ? ' active' : '') + '" data-kind="zt">连板天梯</button>' +
+      '<button type="button" class="ld-tab' + (S.ladderKind === 'dt' ? ' active' : '') + '" data-kind="dt">跌停天梯</button></div>' +
+      '<select class="sel" id="ladderDate" title="切换交易日回看历史天梯">' +
       (S.ladderDates.length
         ? S.ladderDates.map(x => '<option value="' + E(x.date) + '"' + (x.date === (S.ladderDate || (m.poolDate || '')) ? ' selected' : '') + '>' +
-          E(String(x.date).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3')) + '（' + x.count + ' 涨停）</option>').join('')
+          E(String(x.date).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3')) + '（' + x.count + ' 涨停 / ' + (x.dtCount || 0) + ' 跌停）</option>').join('')
         : '<option value="' + E(m.poolDate || '') + '">' + E(m.poolDate || '当日') + '</option>') +
-      '</select></div>' +
+      '</select></div></div>' +
       (ladderIsHistory && S.ladderDate !== m.poolDate ? '<div class="note-box" style="margin:0 0 8px">历史回放：' +
-        E(String(S.ladderDate).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3')) + ' 的涨停池（来源：' + E(S.ladderData.source || '东方财富') +
-        '），板块地位按当日涨停结构判定。<b>这是已发生的历史行情，不是今日机会。</b></div>' : '') +
-      '<div class="em-ladder">' + (S.ladderLoading ? '<div class="empty">载入历史天梯…</div>' : (tiersHtml || '<div class="empty">当日无连板梯队数据</div>')) + '</div>' +
-      dgEdgeLegendCard(true) +
-      '<div class="note-box">空间板：' + space + '<br>梯队判读：' + E(ov.gap ? '存在断层，按 leader-game 框架属退潮前置信号，需次日 2/3 板补齐确认。' : '梯队连续无断层，情绪延续性优于断层结构。') +
-      '<br>板块地位标注规则（按东财行业分组机械判定，非投资建议）：<b class="up">板块龙头</b>=同行业连板最高且封单最强；<b style="color:var(--warn)">反包核心 / 题材龙 / 封单核心</b>=累计板最高 / 连板最高 / 封单最强但不同时满足龙头条件；板块跟风=连板低于行业最高；独苗=行业仅 1 只涨停。<br>每层按封单比降序、首封时间升序排列；封单比 ≥1% 标红、0.3%~1% 标橙、&lt;0.3% 标灰，炸板次数越多风险越高。数据：东方财富涨停池 + 腾讯证券实时快照。' +
-      '</div></div></div></div>' +
+        E(String(S.ladderDate).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3')) + ' 的' + (S.ladderKind === 'dt' ? '跌停' : '涨停') + '池（来源：' + E(S.ladderData.source || '东方财富') +
+        '），分层与板块标注按当日结构判定；彩色边框与 ★ 角标由该日及之前的数据单独计算，不使用今日回测结果。<b>这是已发生的历史行情，不是今日机会。</b></div>' : '') +
+      (S.ladderKind === 'dt'
+        ? dtSummary +
+          '<div class="em-ladder">' + (S.ladderLoading ? '<div class="empty">载入历史天梯…</div>' : (dtTiersHtml || '<div class="empty">当日无跌停标的</div>')) + '</div>' +
+          '<div class="note-box">跌停池个股 <b>无连板层级</b>（跌停不存在连板概念），故按<b>封单强度</b>（封单额 / 流通市值）由高到低分层：一字锁死 ≥3%、强封 1%~3%、普通 0.3%~1%、弱封 &lt;0.3%（越靠下越易撬板）。<b class="warn">最多跌停板块</b>按东方财富行业归属统计家数，家数 ≥2 且并列居首时标注；跌停个股无稳定的概念题材映射，故不臆测题材。数据：东方财富跌停池，交易日 ' + E(m.poolDate || '—') + '。</div>'
+        : '<div class="em-ladder">' + (S.ladderLoading ? '<div class="empty">载入历史天梯…</div>' : (tiersHtml || '<div class="empty">当日无连板梯队数据</div>')) + '</div>' +
+          dgEdgeLegendCard(true) +
+          seedLegendCard(ladderIsHistory ? (S.ladderData.firstBoardSeed || null) : d.firstBoardSeed, ladderIsHistory) +
+          '<div class="note-box">空间板：' + space + '<br>梯队判读：' + E(ov.gap ? '存在断层，按 leader-game 框架属退潮前置信号，需次日 2/3 板补齐确认。' : '梯队连续无断层，情绪延续性优于断层结构。') +
+          '<br>板块地位标注规则（按东财行业分组机械判定，非投资建议）：<b class="up">板块龙头</b>=同行业连板最高且封单最强；<b style="color:var(--warn)">反包核心 / 题材龙 / 封单核心</b>=累计板最高 / 连板最高 / 封单最强但不同时满足龙头条件；板块跟风=连板低于行业最高；独苗=行业仅 1 只涨停。<br>每层按封单比降序、首封时间升序排列；封单比 ≥1% 标红、0.3%~1% 标橙、&lt;0.3% 标灰，炸板次数越多风险越高。数据：东方财富涨停池 + 腾讯证券实时快照。' +
+          '</div>') +
+      '</div></div></div>' +
       fundHtml +
       prevLadderHtml +
 
@@ -614,6 +702,9 @@
     safeChart('chartLadder', ladderOpt, ladderItems);
     const lsel = $('ladderDate');
     if (lsel) lsel.onchange = e => loadLadderDate(e.target.value);
+    $('pane-review').querySelectorAll('.ld-tab').forEach(btn => {
+      btn.onclick = () => { S.ladderKind = btn.dataset.kind; renderReview(S.data); };
+    });
   }
 
   /** 切换连板天梯交易日：拉历史涨停池，只重渲染复盘区 */
@@ -1794,6 +1885,27 @@
     return '<div class="card pad dg-card dg-edge-legend"><div class="dg-card-head"><h4>历史优势组合 · 彩色边框标记</h4>' +
       '<span class="small muted">仅按当日「地位 + 一致加速」标记，不使用次日数据</span></div>' + grid + note + '</div>';
   }
+  /** 首板龙头种子：最近回测分档概率图例，挂在连板天梯下方 */
+  function seedLegendCard(s, isHistory) {
+    if (!s || !s.tiers || !s.samples) return '';
+    const tiers = s.tiers.map(t =>
+      '<div class="fs-legend-item fs-' + E(t.key) + '" style="--fs:' + E(t.color) + ';--fs-bg:' + E(t.bg) + '">' +
+      '<span class="fs-swatch"></span><b>' + E(t.label) + '</b>' +
+      '<span class="small muted">晋级 <b>' + E(t.rate) + '%</b>（n=' + E(t.n) + '） · 成龙 <b>' + E(t.dragonRate) + '%</b></span></div>'
+    ).join('');
+    const factors = (s.factors || []).slice(0, 4).map(f =>
+      '<span class="fs-factor">' + E(f.label) + ' ' + E(f.rate) + '%（×' + E(f.lift === null || f.lift === undefined ? '—' : f.lift) + '）</span>').join('');
+    return '<div class="fs-legend"><div class="dg-h5" style="margin-top:11px">首板龙头种子 · ' +
+      (isHistory ? '截至该日回测标记' : '最近回测标记') + '</div>' +
+      '<div class="fs-legend-grid">' + tiers + '</div>' +
+      (factors ? '<div class="fs-factors">最强因子：' + factors + '</div>' : '') +
+      '<div class="note-box">' + (isHistory ? '截至 ' + E(String(s.asOf || '').replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3') || s.asOf || '该日') +
+        ' 的 ' : '最近 ') + E(s.days) + ' 个交易日 / ' + E(s.samples) +
+      ' 个首板样本，全样本晋级 ' + E(s.baseRate) + '%、成龙 ' + E(s.dragonBaseRate) + '%。' +
+      E(s.note || '') + '首板卡片彩色边框与右上角 ★ 晋级概率即此分档；' +
+      (isHistory ? '历史回放只使用该日及之前的数据统计，不含该日之后的晋级结果。' : '历史回放按各日自身窗口单独计算。') + '</div></div>';
+  }
+
   const dgBar = (v, cls) => '<div class="dg-bar"><i class="' + (cls || 'blue') + '" style="width:'
     + Math.max(0, Math.min(100, Number(v) || 0)).toFixed(1) + '%"></i></div>';
   const dgNum = (v, suffix) => (v === null || v === undefined) ? '—' : E(v) + (suffix || '');
@@ -2860,6 +2972,206 @@
     } finally { S.auctionLoading = false; }
   }
 
+  /* ═══════════ 9:25 首板预测（竞价强度信号 · 经验概率） ═══════════ */
+  function predScoreCls(s) {
+    return s >= 70 ? 'ap-high' : s >= 50 ? 'ap-mid' : 'ap-low';
+  }
+  function predMethodCard() {
+    const meth = (S.predict && S.predict.method) || {};
+    const rules = meth.rules || [];
+    const body = rules.map(r => '<div class="kv"><span class="k">' + E(r.name) + '</span><span class="v">' + E(r.text) + '</span></div>').join('');
+    const open = S.predictMethodOpen;
+    return '<div class="card pad dg-card" style="margin-top:12px">' +
+      '<div class="dg-card-head"><h4>预测口径与校准说明</h4>' +
+      '<button class="btn btn-ghost btn-sm" id="pdMethodToggle">' + (open ? '收起' : '查看') + '全部口径</button></div>' +
+      '<div id="pdMethodBody" style="display:' + (open ? '' : 'none') + '">' + body +
+      '<div class="note-box" style="margin-top:10px">' + E(meth.caveat || '') + '</div></div></div>';
+  }
+
+  function renderPredict() {
+    const j = S.predict;
+    if (!j) return;
+    if (!j.available) {
+      $('pane-predict').innerHTML = '<div class="card empty"><b>无法生成预测：' + E(j.reason || '样本不足') + '</b><br>' +
+        '<span class="small muted">系统不会用推测数据填充；可稍后重试。</span></div>' +
+        '<div class="card pad" style="margin-top:12px"><button class="btn btn-primary" id="pdRetry">重新生成</button></div>';
+      const rb = $('pdRetry'); if (rb) rb.onclick = () => loadPredict(true);
+      return;
+    }
+    const m = j.meta || {}, list = j.list || [], sum = j.summary || {}, cal = j.calibration || {};
+    const isEmp = cal.mode === 'empirical';
+    const dateOpts = (m.calibration && m.calibration.filledDays !== undefined) ? null : null;
+    const needBackfill = list.some(x => x.result === null || x.result === undefined);
+    const bfStat = j.stat || (m && m.stat) || null;
+    const bfPool = j.backfillPool || (m && m.backfillPool) || null;
+    const bfLine = bfStat && bfStat.withResult
+      ? '<span class="pd-bf-ok">已实时回填 ' + E(bfStat.withResult) + '/' + E(bfStat.total) + ' · 封住首板 <b>' + E(bfStat.sealed) + '</b> 只' +
+        (bfPool ? '（' + E(bfPool.source) + ' ' + E(bfPool.date) + '）' : '') + '</span>'
+      : (needBackfill ? '<span class="pd-bf-wait">' + E(j.note || '待回填：等待收盘后拉取真实封板结果') + '</span>' : '');
+
+    const head = '<div class="sec-head"><h3>9:25 首板预测 · 竞价强度信号</h3>' +
+      src('新浪竞价快照 + 腾讯量比/日K') +
+      '<span class="spacer"></span>' +
+      '<label class="small muted">回放日 </label>' +
+      '<input id="pdDate" class="sel-sm" style="width:100px" placeholder="YYYYMMDD" value="' + E(j.tradeDate || '') + '">' +
+      '<button class="btn btn-ghost btn-sm" id="pdReplay">回放</button>' +
+      '<button class="btn btn-primary btn-sm" id="pdRefresh">生成当前</button>' +
+      (needBackfill ? '<button class="btn btn-ghost btn-sm" id="pdBackfill">拉取回填</button>' : '') + '</div>';
+
+    // 时点 + 概率口径横幅（诚实标注）
+    const stateNote = m.state ? ('<b>当前时点：' + E(m.state) + '</b> · ' + E(m.note || '') + '。') : '';
+    const amtStateNote = m.auctionAmountEnabled === true
+      ? '<span class="up">竞价成交额已采集（集合竞价时段），作为惩罚项参与打分。</span>'
+      : '<span class="muted">当前非集合竞价时段，快照成交额为全天量、不可当竞价额，<b>竞价额惩罚项已禁用</b>（不扣分）。</span>';
+    const banner = '<div class="conclusion card" style="border-left-color:var(--warn);margin-bottom:12px">' +
+      '<div class="lead">' + stateNote +
+      '<span class="up">概率为' + (isEmp ? '实测校准' : '保守经验估计') + '（基准约 ' + E(j.baseRate) + '%），不是精确命中率、不是买入信号。</span><br>' +
+      amtStateNote +
+      '每天 9:25 自动落盘当日竞价快照，收盘后自动拉取真实封板结果回填，累计 20 交易日后自动切换为实测概率。' +
+      (bfLine ? '<br>' + bfLine : '') +
+      (j.replay ? '<br>正在查看<b>历史预测回放</b>：' + E(j.note || '') : '') +
+      '</div></div>';
+
+    // KPI
+    const kpi = '<div class="dg-kpi-grid">' +
+      '<div class="dg-kpi"><span>重点关注</span><b class="up">' + E(sum.focus || 0) + ' <span class="small muted">只</span></b><em>信号分 ≥70 · 共 ' + E(sum.candidates || 0) + ' 候选</em></div>' +
+      '<div class="dg-kpi"><span>次选 / 回避</span><b>' + E(sum.watch || 0) + ' / ' + E(sum.avoid || 0) + '</b><em>信号分 50~70 / &lt;50</em></div>' +
+      '<div class="dg-kpi"><span>校准状态</span><b class="' + (isEmp ? 'up' : '') + '">' + E(cal.days || 0) + ' <span class="small muted">日</span></b><em>' + E(cal.label || '') + '</em></div>' +
+      '<div class="dg-kpi"><span>基准封板率</span><b>' + E(j.baseRate) + '%</b><em>高开票经验基准 · 一字 ' + E(sum.oneWord || 0) + ' 只</em></div>' +
+      '</div>';
+
+    // 信号分量展示
+    // 竞价额惩罚为负分，单独配色显示（惩罚项），未启用时不显示
+    const amtSigCell = d => {
+      if (!d || d.usable === false) return '';
+      const penalty = Number(d.pts) || 0;
+      return '<span class="pd-sig pd-sig-penalty' + (penalty <= -12 ? ' heavy' : '') + '" title="' + E(d.label) + '（竞价额/流通市值 ' + E(d.turnover === null || d.turnover === undefined ? '—' : d.turnover + '%') + '）">' +
+        E(d.label) + '<b> ' + E(d.pts) + '</b></span>';
+    };
+    const sigCell = (d, max) => {
+      if (!d) return '';
+      return '<span class="pd-sig" title="' + E(d.label) + '">' + E(d.label) + '<b> ' + E(d.pts) + '</b></span>';
+    };
+    const probBar = p => {
+      const w = p === null || p === undefined ? 0 : Math.max(2, Math.min(100, p * 3));
+      return '<div style="display:flex;align-items:center;gap:6px"><b class="' + (p >= 18 ? 'ap-high' : p >= 12 ? 'ap-mid' : 'ap-low') + '">' + E(p === null ? '—' : p + '%') + '</b>' +
+        '<div class="dg-bar" style="flex:1;min-width:40px"><i class="' + (p >= 18 ? 'red' : p >= 12 ? 'warn' : 'blue') + '" style="width:' + w.toFixed(0) + '%"></i></div></div>';
+    };
+    const tierCls = t => t === 'focus' ? 'red' : t === 'watch' ? 'warn' : '';
+
+    // 分层筛选
+    const filter = S.predictFilter || 'all';
+    const shown = filter === 'all' ? list : list.filter(x => x.tier === filter);
+    const filterBar = '<div class="pd-filter">' +
+      [['all', '全部 ' + (sum.candidates || 0)], ['focus', '重点关注 ' + (sum.focus || 0)], ['watch', '次选 ' + (sum.watch || 0)], ['avoid', '回避 ' + (sum.avoid || 0)]]
+        .map(([k, label]) => '<button class="pd-filter-btn ' + (filter === k ? 'active' : '') + '" data-pd-filter="' + k + '">' + E(label) + '</button>').join('') + '</div>';
+
+    const listRows = shown.map(x => {
+      const resultCell = x.result === null || x.result === undefined
+        ? '<span class="muted">待回填</span>'
+        : x.result === 1 ? tag('封住', 'red') : tag(x.resultLabel === '炸板未封' ? '炸板' : '未封', 'green');
+      return '<tr class="ap-row"><td style="text-align:center"><span class="ap-rank ' + tierCls(x.tier) + '">' + E(x.rank) + '</span></td>' +
+        '<td class="left">' + sn(x.code, x.name) + '<div class="small muted">' + E(x.code) + ' · ' + E(x.industry || x.board || '') + '</div></td>' +
+        '<td>' + tag(x.tierLabel, tierCls(x.tier)) + '</td>' +
+        '<td><b class="' + predScoreCls(x.score) + '">' + E(x.score) + '</b></td>' +
+        '<td style="min-width:88px">' + probBar(x.expProb) + '<div class="small muted" style="text-align:center">' + E(x.probLabel) + '</div></td>' +
+        '<td class="left"><div class="ap-chips">' +
+          sigCell(x.signals && x.signals.gap) + sigCell(x.signals && x.signals.volume) + sigCell(x.signals && x.signals.prevVol) +
+          sigCell(x.signals && x.signals.cap) + sigCell(x.signals && x.signals.heat) +
+          amtSigCell(x.signals && x.signals.auctionAmt) + '</div></td>' +
+        '<td>' + PC(x.gap, 2) + '</td>' +
+        '<td>' + (x.volRatio === null || x.volRatio === undefined ? '—' : N(x.volRatio, 2)) + '</td>' +
+        '<td>' + (x.floatCap === null || x.floatCap === undefined ? '—' : CAP(x.floatCap)) + '</td>' +
+        '<td>' + (x.oneWord ? tag('一字买不进', 'warn') : '<span class="muted">—</span>') + '</td>' +
+        '<td>' + resultCell + '</td></tr>';
+    }).join('');
+
+    const listCard = '<div class="sec"><div class="sec-head"><h3>预测清单 · ' + E(fmtDate(j.tradeDate)) + ' 9:25 竞价</h3>' +
+      '<span class="small muted">按信号分降序 · 点击名称看K线 · 收盘后自动回填结果</span></div>' +
+      '<div class="card pad">' + filterBar +
+      '<div class="tbl-wrap"><table><thead><tr><th>排名</th><th class="left">个股</th><th>分层</th><th>信号分</th><th>首板概率</th>' +
+      '<th class="left">信号分解(竞价/量比/昨量/市值/题材/竞价额)</th><th>竞价高开</th><th>量比</th><th>流通市值</th><th>一字</th><th>实际</th></tr></thead>' +
+      '<tbody>' + listRows + '</tbody></table></div>' +
+      (shown.length ? '' : '<div class="empty">该分层暂无个股</div>') +
+      '<div class="note-box">「信号分解」括号后为该信号得分（竞价30 / 量比25 / 昨量15 / 市值20 / 题材10；竞价额为惩罚项 0~−16，红字显示）。' +
+      '竞价额惩罚依据近6日217只冲击涨停票回测：竞价换手≥0.5% 封板率骤降至18.2%，故高竞价额扣分；仅集合竞价时段采集，盘后禁用。' +
+      '概率为<b>' + (isEmp ? '实测校准' : '保守经验估计') + '</b>，' + E(cal.note || '') +
+      ' 收盘后回填真实封板结果，用于持续校准。<b>竞价高开≠可买入，一字/近涨停开盘常买不进。</b></div></div></div>';
+
+    const metaNote = '<div class="small muted" style="margin-top:8px">数据口径：' + E(m.dataSourceNote || '') + '</div>';
+    $('pane-predict').innerHTML = head + banner + kpi + listCard + predMethodCard() +
+      '<div class="disclaimer" style="margin-top:14px"><strong>免责声明</strong>：' + E(m.disclaimer || '') + '</div>' + metaNote;
+
+    // 绑定
+    $('pdDate').onchange = e => { S.predictOpts.date = e.target.value.replace(/\D/g, ''); };
+    $('pdReplay').onclick = () => { const d = $('pdDate').value.replace(/\D/g, ''); if (/^\d{8}$/.test(d)) loadPredict(false, d); };
+    $('pdRefresh').onclick = () => loadPredict(true);
+    const bfb = $('pdBackfill');
+    if (bfb) bfb.onclick = () => doBackfill(j.tradeDate);
+    document.querySelectorAll('[data-pd-filter]').forEach(b => {
+      b.onclick = () => { S.predictFilter = b.getAttribute('data-pd-filter'); renderPredict(); };
+    });
+    const mt = $('pdMethodToggle');
+    if (mt) mt.onclick = () => { S.predictMethodOpen = !S.predictMethodOpen; renderPredict(); };
+  }
+
+  /** 主动实时拉取真实封板结果回填当前快照（后端按 tradeDate 取对应日涨停/炸板池） */
+  async function doBackfill(date, silent) {
+    const d = String(date || '').replace(/\D/g, '');
+    if (!/^\d{8}$/.test(d) || S.predictLoading) return;
+    if (!silent) $('pane-predict').insertAdjacentHTML('afterbegin', '<div class="card empty" id="pdBfLoading">正在实时拉取 ' + E(d) + ' 涨停/炸板池回填真实结果…</div>');
+    try {
+      const r = await fetch('/api/predict?mode=backfill&date=' + encodeURIComponent(d) + '&force=1', { cache: 'no-store' });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+      const rec = j.result || {};
+      if (!rec.backfilled) throw new Error(rec.backfillReason || '上游该交易日涨停池暂不可用，保持待回填');
+      // 用回填后的真实结果刷新当前视图（保持回放模式，不重抓快照）
+      await loadPredict(true, d);
+    } catch (e) {
+      if (!silent) {
+        const box = $('pdBfLoading');
+        if (box) box.innerHTML = '<b>回填失败：' + E(e.message) + '</b><br><span class="small muted">系统不会用推测数据填充；可稍后重试。</span>';
+      }
+    } finally {
+      const box = $('pdBfLoading'); if (box) box.remove();
+    }
+  }
+
+  async function loadPredict(force, replayDate) {
+    if (S.predictLoading) return;
+    S.predictLoading = true;
+    if (!S.predict) $('pane-predict').innerHTML = '<div class="card empty">正在抓取全市场竞价快照、计算竞价强度信号并生成预测列表…</div>';
+    const q = new URLSearchParams();
+    if (replayDate) q.set('date', replayDate);
+    if (force) q.set('force', '1');
+    try {
+      const r = await fetch('/api/predict?' + q.toString(), { cache: 'no-store' });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+      S.predict = j; S.predictAt = Date.now(); S.predictError = null;
+      renderPredict();
+      $('badgePredict').textContent = (j.summary && j.summary.focus) || '—';
+      // 若存在待回填项且该日已收盘，自动实时拉取一次回填（延迟避开加载锁；5分钟节流防盘中反复请求）
+      const pend = (j.list || []).some(x => x.result === null || x.result === undefined);
+      const pd = j.tradeDate;
+      if (pend && pd && /^\d{8}$/.test(String(pd))) {
+        S.autoBfAt = S.autoBfAt || {};
+        if (!S.autoBfAt[pd] || Date.now() - S.autoBfAt[pd] > 300000) {
+          S.autoBfAt[pd] = Date.now();
+          setTimeout(() => doBackfill(pd, true), 0);
+        }
+      }
+    } catch (e) {
+      S.predictError = e.message;
+      $('badgePredict').textContent = '—';
+      $('pane-predict').innerHTML = '<div class="card empty"><b>预测失败：' + E(e.message) + '</b><br>' +
+        '<span class="small muted">' + (isConnError(e) ? E(SERVICE_HINT) : '服务端或上游数据源返回异常；系统不会用推测数据填充。') + '</span></div>' +
+        '<div class="card pad" style="margin-top:12px"><button class="btn btn-primary" id="pdRetry">重新生成</button></div>';
+      const rb = $('pdRetry'); if (rb) rb.onclick = () => loadPredict(true);
+    } finally { S.predictLoading = false; }
+  }
+
   function renderEnlightenment() {
     const j = S.en; if (!j) return;
     const m = j.meta || {}, methods = j.methods || [], best = j.best, mk = j.market || {}, cands = j.candidates || [];
@@ -3096,7 +3408,7 @@
   }
   function syncMinuteTimer() {
     const c = S.chart;
-    if (!c || !c.open || c.period !== 'minute' || !c.data || !isTradingNow()) { stopMinuteTimer(); return; }
+    if (!c || !c.open || c.period !== 'minute' || !c.data || !isTradingNow() || c.histDate) { stopMinuteTimer(); return; }
     if (c.minuteTimer) return;
     c.minuteTimer = setInterval(() => {
       const cur = S.chart;
@@ -3113,8 +3425,40 @@
       if (j.error) return;
       S.chart.data.minute = j.minute || {};
       S.chart.data.quote = j.quote || S.chart.data.quote;
+      S.chart.data.seal = j.seal || null;
+      if (j.fund && j.fund.now) S.chart.data.fund = Object.assign({}, S.chart.data.fund, { now: j.fund.now });
       renderStockChart();
     } catch (e) { /* 分时刷新失败保留上一帧，不打断查看 */ }
+  }
+
+  /** 从日K某天进入该交易日历史分时：最近5日腾讯1分钟线，更早东财5分钟线(约1个月)，超范围如实提示 */
+  async function loadMinuteOfDate(date) {
+    const c = S.chart, d = String(date || '').replace(/\D/g, '');
+    if (!c || !c.data || !/^\d{8}$/.test(d)) return;
+    const code = c.code;
+    stopMinuteTimer();
+    $('smSource').textContent = '正在拉取 ' + E(d) + ' 分时…';
+    try {
+      const r = await fetch('/api/stock/minute?code=' + encodeURIComponent(code) + '&date=' + encodeURIComponent(d), { cache: 'no-store' });
+      const j = await r.json();
+      if (!S.chart || S.chart.code !== code) return; // 期间切换了标的
+      if (j.error) throw new Error(j.error);
+      const md = j.minute || {};
+      if (!md.rows || !md.rows.length) {
+        // 超范围/无数据：留在日K，弹出明确提示，不伪造分时
+        alert('无法查看 ' + d + ' 分时：' + (md.reason || '该交易日分时数据不可用'));
+        renderStockChart();
+        return;
+      }
+      c.histDate = d;
+      c.histMinute = md;                 // 历史分时单独保存，不覆盖当日
+      c.period = 'minute';
+      c.view = null; c.lockIdx = null;
+      renderStockChart();
+    } catch (e) {
+      $('smSource').textContent = '历史分时加载失败';
+      $('smBody').innerHTML = '<div class="empty">' + E(isConnError(e) ? SERVICE_HINT : (e && e.message || e)) + '</div>';
+    }
   }
 
   function closeStockChart() {
@@ -3141,7 +3485,7 @@
   }
 
   /** 分时图：价格线（水上红 / 水下绿） + 均价线 + 昨收基准 + 成交量，纯 SVG 无额外依赖 */
-  function smMinuteSvg(rows, quote, mdate) {
+  function smMinuteSvg(rows, quote, mdate, seal) {
     if (!rows || rows.length < 2) return '<div class="empty">分时数据不足（需 ≥2 分钟），无法绘制</div>';
     const W = 1110, H = 520, L = 62, R = 68, PT = 22, PB = 388, VT = 406, VB = 498;
     const PW = W - L - R;
@@ -3181,6 +3525,13 @@
       const x = tX(tk.m);
       a.push('<line x1="' + x.toFixed(1) + '" y1="' + PT + '" x2="' + x.toFixed(1) + '" y2="' + VB + '" stroke="' + (k === 2 ? '#cbd5e1' : '#eef2f7') + '" stroke-dasharray="' + (k === 2 ? '3 4' : '2 5') + '"/>');
     });
+    // 首封时刻竖线：把封单情况直接标在分时图上（来自东财涨停/炸板池快照）
+    const sealMin = seal && seal.firstSeal ? toMin(String(seal.firstSeal).slice(0, 5)) : null;
+    if (sealMin !== null && sealMin !== undefined) {
+      const sx = tX(sealMin);
+      a.push('<line x1="' + sx.toFixed(1) + '" y1="' + PT + '" x2="' + sx.toFixed(1) + '" y2="' + VB + '" stroke="#e3a800" stroke-dasharray="4 3"/>');
+      a.push('<text x="' + Math.min(sx + 5, W - R - 92).toFixed(1) + '" y="' + (PT + 12) + '" font-size="10" fill="#a87600">首封 ' + E(String(seal.firstSeal).slice(0, 5)) + '</text>');
+    }
     // 横向网格 + 涨跌幅刻度
     for (let k = 0; k <= 4; k++) {
       const p = lo + (hi - lo) * k / 4, y = Y(p);
@@ -3283,34 +3634,73 @@
     const j = S.chart.data; if (!j) return;
     const per = S.chart.period;
     if (per === 'minute') {
-      const md = j.minute || {}, rows = md.rows || [];
+      const hist = !!S.chart.histDate;
+      const md = hist ? (S.chart.histMinute || {}) : (j.minute || {});
+      const rows = md.rows || [];
       const q = j.quote || {};
       [...document.querySelectorAll('.sm-tab')].forEach(b => b.classList.toggle('active', b.dataset.period === per));
       const trading = isTradingNow();
-      $('smSource').textContent = '分时 · ' + E(md.source || '来源不可用') + (md.date ? ' · 交易日 ' + E(String(md.date)) : '') +
-        ' · 数据拉取 ' + E(String(md.asOf || '').slice(11, 19)) +
-        (trading ? ' · 每 12 秒自动刷新' : ' · 已收盘（静态）');
-      const fn = (j.fund && j.fund.now) || {};
-      const fundBar = Number.isFinite(fn.main) && fn.main !== null
-        ? '<div class="sm-fund-now">当日资金：<span class="' + (fn.main >= 0 ? 'up' : 'down') + '">主力净额 ' +
-          (fn.main / 1e8).toFixed(2) + ' 亿</span><span class="small muted">（超大单 ' +
-          (fn.huge !== null ? (fn.huge / 1e8).toFixed(2) + ' 亿' : '—') + ' / 大单 ' +
-          (fn.big !== null ? (fn.big / 1e8).toFixed(2) + ' 亿' : '—') + '）· ' + E(fn.source || '') + '</span></div>'
+      $('smSource').textContent = (hist ? '历史分时 · ' : '分时 · ') + E(md.source || '来源不可用') + (md.date ? ' · 交易日 ' + E(String(md.date)) : '') +
+        (hist ? ' · ' + E(md.intervalLabel || '分钟线') + ' · 可回溯约1个月' : ' · 数据拉取 ' + E(String(md.asOf || '').slice(11, 19)) + (trading ? ' · 每 12 秒自动刷新' : ' · 已收盘（静态）'));
+      const seal = hist ? null : (j.seal || null);
+      const fn = hist ? {} : ((j.fund && j.fund.now) || {});
+      const money = v => (v === null || v === undefined || !Number.isFinite(Number(v))) ? '—'
+        : Math.abs(v) >= 1e8 ? (v / 1e8).toFixed(2) + '亿'
+        : Math.abs(v) >= 1e4 ? (v / 1e4).toFixed(0) + '万' : Math.round(v) + '元';
+      const histBar = hist
+        ? '<div class="sm-seal-now is-hist">正在查看 <b>' + E(String(md.date || S.chart.histDate)) + '</b> 历史分时 · 封单 / 当日资金快照为实时数据，不适用历史日，已隐藏 · ' +
+          '<button type="button" class="sm-back-today" id="smBackToday">返回当日分时</button></div>'
         : '';
-      $('smBody').innerHTML = fundBar + (md.rows && md.rows.length
-        ? '<div class="sm-minute-chart">' + smMinuteSvg(rows, q, md.date) + '</div>'
+      const fundBar = !hist && Number.isFinite(fn.main) && fn.main !== null
+        ? '<div class="sm-fund-now">当日资金：<span class="' + (fn.main >= 0 ? 'up' : 'down') + '">主力净额 ' +
+          money(fn.main) + (Number.isFinite(fn.mainPct) && fn.mainPct !== null ? '（' + N(fn.mainPct) + '%）' : '') +
+          '</span><span class="small muted">（超大单 ' + money(fn.huge) + ' / 大单 ' + money(fn.big) +
+          '）· ' + E(fn.source || '') + '</span></div>'
+        : '';
+      const sealBar = seal
+        ? '<div class="sm-seal-now' + (seal.kind === 'zb' ? ' is-broken' : '') + '">' +
+            '<b>' + (seal.kind === 'zb' ? '炸板池封单快照' : '涨停封单') + '</b>' +
+            '<span>封单额 <b>' + money(seal.sealFund) + '</b></span>' +
+            (Number.isFinite(seal.sealFundRatio) && seal.sealFundRatio !== null ? '<span>占流通 ' + N(seal.sealFundRatio) + '%</span>' : '') +
+            '<span>首封 ' + E(seal.firstSeal || '—') + '</span>' +
+            (seal.brokenCount ? '<span>炸板 ' + seal.brokenCount + ' 次</span>' : '') +
+            (Number(seal.boards) > 1 ? '<span>' + seal.boards + ' 连板</span>' : '') +
+            '<span class="small muted">' + E(String(seal.date || '')) + ' · ' + E(seal.source || '') + '</span>' +
+          '</div>'
+        : '<div class="sm-seal-now is-none">封单：该股当日未进入涨停 / 炸板池，无封单快照</div>';
+      $('smBody').innerHTML = histBar + sealBar + fundBar + (md.rows && md.rows.length
+        // 历史模式传空 quote：不画"竞价开盘"虚线、不用今日昨收当历史日基准（改用该日首分钟价为基准）
+        ? '<div class="sm-minute-chart">' + smMinuteSvg(rows, hist ? {} : q, md.date, seal) + '</div>'
         : '<div class="empty">' + E(md.reason || '分时数据暂不可用') + '</div>');
-      $('smFoot').innerHTML = '<div class="note-box">分时数据来自腾讯证券公开接口（每分钟价格 / 成交量 / 成交额，服务端缓存 60 秒）；均价线＝累计成交额 ÷ 累计成交量，与行情软件口径一致。' +
-        (trading
-          ? '<b>当前为交易时段，每 12 秒自动重拉分时</b>；盘后自动停止。'
-          : '<b>当前为非交易时段，展示最近一个交易日的完整分时，不再变动</b>；开盘后自动恢复刷新。') +
-        '<br><b>关于集合竞价：</b>腾讯分时接口从 09:30 开始返回分钟数据，<b>不含 9:15–9:25 的竞价过程</b>（竞价没有连续分钟成交）。' +
-        '图中的紫色虚线是 9:25 竞价成交价（即开盘价' + (q.open > 0 ? ' ' + N(q.open) : '，当前快照未取得') + '），' +
-        '竞价涨跌幅 ' + (q.open > 0 && q.prevClose > 0 ? (q.open > q.prevClose ? '+' : '') + N((q.open - q.prevClose) / q.prevClose * 100) + '%' : '—') +
-        '；竞价期间的委托撤单过程不展示。' +
-        '<br><b>看图口径：</b>价格线以昨收价（灰色虚线）为界，<b style="color:var(--up)">水上红色</b>、<b style="color:var(--down)">水下绿色</b>；横轴为固定交易时段，盘中曲线只画到当前时刻、右侧留白。' +
-        '<b>DDX / DDZ 为第三方专有算法指标，公开接口无法取得真实序列，系统不提供估算值</b>；此处用真实的特大单/大单资金快照替代。' +
-        '<b>分钟级数据，不是逐笔成交，不构成投资建议。</b></div>';
+      if (hist) {
+        const iv = E(md.intervalLabel || '分钟线');
+        const srcName = E(md.source || '公开行情接口');
+        const avail = (md.available || []);
+        const availTip = avail.length
+          ? '当前可回溯 <b>' + avail.length + ' 个交易日</b>（' + E(String(avail[0]).replace(/(\d{4})(\d{2})(\d{2})/, '$2-$3')) + ' ~ ' + E(String(avail[avail.length - 1]).replace(/(\d{4})(\d{2})(\d{2})/, '$2-$3')) + '）。'
+          : '';
+        $('smFoot').innerHTML = '<div class="note-box"><b>历史分时口径：</b>数据来自<b>' + srcName + '</b>，精度 <b>' + iv + '</b>。' +
+          '最近 5 个交易日为腾讯 1 分钟线；更早日期回退东方财富 5 分钟线（约 1 个月），' + availTip + '更早数据公开接口无法取得，系统不伪造。' +
+          '展示的是 <b>' + E(String(md.date || S.chart.histDate)) + '</b> 当日完整分时走势；均价线＝累计成交额 ÷ 累计成交量。' +
+          '<br><b>不适用历史日的数据：</b>封单快照与当日资金均为实时接口数据，无法回溯到该日，已隐藏；历史模式下不画竞价虚线、改用该日首分钟价为基准。' +
+          '<br>' + (md.granularity === 5 ? '5 分钟线每根为该 5 分钟收盘价与区间成交量，走势与 1 分钟一致，但不及后者细腻。' : '分钟级数据，不是逐笔成交，不构成投资建议。') + '</div>';
+      } else {
+        $('smFoot').innerHTML = '<div class="note-box">分时数据来自腾讯证券公开接口（每分钟价格 / 成交量 / 成交额）；均价线＝累计成交额 ÷ 累计成交量，与行情软件口径一致。' +
+          '<br><b>封单：</b>' + (seal ? '东方财富' + (seal.kind === 'zb' ? '炸板' : '涨停') + '池 ' + E(String(seal.date || '')) + ' 快照（封单额 / 占流通市值 / 首封 / 炸板次数），随分时同步刷新；是池内快照，不是逐笔或分钟连续封单曲线。' : '该股当日未进入涨停 / 炸板池，故无封单快照。') +
+          '<br><b>当日资金：</b>' + E(fn.caliber || '主力净额=超大单+大单（东方财富口径）') + '，与下方日K资金柱同口径。' +
+          (trading
+            ? '<b>当前为交易时段，每 12 秒自动重拉分时</b>；盘后自动停止。'
+            : '<b>当前为非交易时段，展示最近一个交易日的完整分时，不再变动</b>；开盘后自动恢复刷新。') +
+          '<br><b>关于集合竞价：</b>腾讯分时接口从 09:30 开始返回分钟数据，<b>不含 9:15–9:25 的竞价过程</b>（竞价没有连续分钟成交）。' +
+          '图中的紫色虚线是 9:25 竞价成交价（即开盘价' + (q.open > 0 ? ' ' + N(q.open) : '，当前快照未取得') + '），' +
+          '竞价涨跌幅 ' + (q.open > 0 && q.prevClose > 0 ? (q.open > q.prevClose ? '+' : '') + N((q.open - q.prevClose) / q.prevClose * 100) + '%' : '—') +
+          '；竞价期间的委托撤单过程不展示。' +
+          '<br><b>看图口径：</b>价格线以昨收价（灰色虚线）为界，<b style="color:var(--up)">水上红色</b>、<b style="color:var(--down)">水下绿色</b>；横轴为固定交易时段，盘中曲线只画到当前时刻、右侧留白。' +
+          '<b>DDX / DDZ 为第三方专有算法指标，公开接口无法取得真实序列，系统不提供估算值</b>；此处用真实的特大单/大单资金快照替代。' +
+          '<b>分钟级数据，不是逐笔成交，不构成投资建议。</b></div>';
+      }
+      const bt = $('smBackToday');
+      if (bt) bt.onclick = () => { S.chart.histDate = null; S.chart.histMinute = null; syncMinuteTimer(); renderStockChart(); };
       syncMinuteTimer();
       return;
     }
@@ -3716,22 +4106,26 @@
       if (dot) { dot.setAttribute('cx', cx.toFixed(1)); dot.setAttribute('cy', smClamp(yy, g.PT, g.PB).toFixed(1)); }
     }
     if (!panel) return;
-    panel.innerHTML = smHoverDataHtml(bar, gi, !!locked);
+    // 面板内容只在数据变化时重建：鼠标微动导致 DOM 反复重建会让按钮的 click 丢失
+    const key = S.chart.period + '|' + gi + '|' + (locked ? 1 : 0);
+    if (S.chart._hoverKey !== key) {
+      panel.innerHTML = smHoverDataHtml(bar, gi, !!locked);
+      S.chart._hoverKey = key;
+    }
     panel.style.display = 'block';
-    // 优先跟随鼠标；缩放恢复等无鼠标坐标时用十字交点定位
-    let ax = rx, ay = ry;
-    if (ax === null || ax === undefined || ay === null || ay === undefined) {
-      const svgEl = wrap.querySelector('svg.sm-kline');
-      if (svgEl) {
-        const sr = svgEl.getBoundingClientRect(), wr = wrap.getBoundingClientRect();
-        ax = (sr.left - wr.left) + cx / g.W * sr.width;
-        ay = (sr.top - wr.top) + smClamp(yy, g.PT, g.PB) / g.H * sr.height;
-      } else { ax = 20; ay = 20; }
+    // 位置锚定该 K 线蜡烛（中心 x + 收盘价 y），不随鼠标实时跳动，按钮才点得到
+    const cyBar = g.PB - (bar.close - g.minP) / (g.maxP - g.minP) * (g.PB - g.PT);
+    let ax = 20, ay = 20;
+    const svgEl = wrap.querySelector('svg.sm-kline');
+    if (svgEl) {
+      const sr = svgEl.getBoundingClientRect(), wr = wrap.getBoundingClientRect();
+      ax = (sr.left - wr.left) + cx / g.W * sr.width;
+      ay = (sr.top - wr.top) + smClamp(cyBar, g.PT, g.PB) / g.H * sr.height;
     }
     const pw = panel.offsetWidth || 210, ph = panel.offsetHeight || 120;
-    let left = ax + 14; if (left + pw > wrap.clientWidth - 4) left = ax - pw - 14;
+    let left = ax + 16; if (left + pw > wrap.clientWidth - 4) left = ax - pw - 16;
     if (left < 2) left = 2;
-    let top = ay + 12; if (top + ph > wrap.clientHeight - 4) top = ay - ph - 12;
+    let top = ay - ph / 2; if (top + ph > wrap.clientHeight - 4) top = wrap.clientHeight - ph - 4;
     if (top < 2) top = 2;
     panel.style.left = left + 'px';
     panel.style.top = top + 'px';
@@ -3741,6 +4135,7 @@
     const cross = document.getElementById('smCross'), panel = $('smHoverPanel');
     if (cross) cross.style.display = 'none';
     if (panel) { panel.style.display = 'none'; panel.innerHTML = ''; }
+    S.chart._hoverKey = null;
   }
 
   function smHoverDataHtml(bar, gi, locked) {
@@ -3752,13 +4147,16 @@
     const row = (k, v, c) => '<div class="sm-hover-row"><span>' + k + '</span><b class="' + (c || '') + '">' + v + '</b></div>';
     const kind = S.chart.period === 'day' ? klBarKind(rows, gi, S.chart.code, S.chart.name) : null;
     const kindChip = kind ? '<span class="sm-hover-kind kind-' + kind + '">' + { limitUp: '涨停', limitDown: '跌停', broken: '炸板' }[kind] + '</span>' : '';
+    const dnum = String(bar.date || '').replace(/\D/g, '');
+    const minuteBtn = S.chart.period === 'day' && /^\d{8}$/.test(dnum)
+      ? '<button type="button" class="sm-hover-minBtn" data-md="' + E(dnum) + '" title="查看该交易日分时（可回溯约1个月：最近5日1分钟线，更早5分钟线）">📈 看 ' + E(String(bar.date).slice(5)) + ' 分时</button>' : '';
     return '<div class="sm-hover-head"><b>' + E(bar.date) + '</b>' + kindChip + (locked ? '<span class="sm-lock-flag">已锁定 · 再点取消</span>' : '') + '</div>' +
       '<div class="sm-hover-grid">' +
         row('开盘', N(bar.open)) + row('最高', N(bar.high), 'up') +
         row('最低', N(bar.low), 'down') + row('收盘', N(bar.close), cls) +
         row('涨跌幅', pct === null ? '—' : (pct > 0 ? '+' : '') + N(pct) + '%', cls) + row('成交量', AMT(bar.volume)) +
         row('MA5', ma(5)) + row('MA10', ma(10)) + row('MA20', ma(20)) +
-      '</div>';
+      '</div>' + minuteBtn;
   }
 
   function bindKlineInteractions() {
@@ -3793,6 +4191,8 @@
 
     wrap.addEventListener('mousemove', e => {
       const p = smEvtPos(e); if (!p) return;
+      // 鼠标进入数据面板（含"看分时"按钮）时冻结十字，面板保持不动，按钮可稳定点击
+      if (e.target.closest && e.target.closest('#smHoverPanel')) return;
       if (drag) {
         const target = Math.round(smClamp(drag.start - Math.round((p.vx - drag.vx) / drag.g.cw), 0, drag.g.total - S.chart.view.count));
         if (Math.abs(p.vx - drag.vx) > 3) drag.moved = true;
@@ -3810,11 +4210,16 @@
     wrap.addEventListener('mouseleave', () => { if (!drag && S.chart.lockIdx === null) smHideCross(); });
     wrap.addEventListener('mousedown', e => {
       if (e.button !== 0) return;
+      // 在面板按钮上按下时不启动拖拽，避免误平移 K 线
+      if (e.target.closest && e.target.closest('#smHoverPanel')) return;
       const p = smEvtPos(e); if (!p) return;
       drag = { vx: p.vx, start: S.chart.view.start, g: Object.assign({}, S.chart.geom), moved: false };
       wrap.classList.add('dragging');
     });
     wrap.addEventListener('click', e => {
+      // hover 面板里的"看分时"按钮：加载该交易日历史分时并切到分时 tab
+      const mb = e.target.closest('.sm-hover-minBtn');
+      if (mb) { e.preventDefault(); e.stopPropagation(); loadMinuteOfDate(mb.dataset.md); return; }
       if (S.chart._justDragged) { S.chart._justDragged = false; return; }
       const p = smEvtPos(e); if (!p) return;
       const g = S.chart.geom, j = Math.floor((p.vx - g.L) / g.cw);

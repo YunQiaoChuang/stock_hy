@@ -168,7 +168,7 @@ async function buildDashboard(query) {
     ds.getPools().catch(() => ({ zt: [], qs: [], zb: [], dt: [], date: '', asOf: new Date().toISOString() })),
     ds.getIndices().catch(() => []),
     ds.getSectorBoards().catch(() => ({ industry: [], concept: [], asOf: new Date().toISOString() })),
-    ds.getPoolFullHistory(3).catch(() => ({ dates: [], byDate: {}, note: '' })),
+    ds.getPoolFullHistory(15).catch(() => ({ dates: [], byDate: {}, note: '' })),
     ds.getFundFlow().catch(() => ({ boards: [], totalNet: null, reason: '资金流暂不可用' }))
   ]);
 
@@ -219,6 +219,9 @@ async function buildDashboard(query) {
   // 连板天梯的历史优势组合标记：与「明日龙头」同一套地位 / 一致分歧规则，不参与任何评分
   const dragonEdges = an.dragonEdgeMarks(pools, prevHistory);
   (opps.zt || []).forEach(x => { if (dragonEdges[x.code]) x.dragonEdge = dragonEdges[x.code]; });
+  // 首板龙头种子：最近历史回测的分档概率，挂到当日首板卡片（历史日期的天梯不误用当日标记）
+  const seed = an.firstBoardSeedBacktest(prevHistory, pools, { asOf: beijingNow().now });
+  (opps.zt || []).forEach(x => { if (seed.marks[x.code]) x.seedMark = seed.marks[x.code]; });
   const relay = an.relayPicks(pools, ov, themes, klineMap, quotes, filtersWithSet);
   // 昨日连板天梯今日晋级情况：用已发生的历史池 + 今日快照，保守判定晋级 / 回封 / 断板
   const prevLadder = an.prevLadderProgress(prevHistory, pools, quotes);
@@ -251,7 +254,7 @@ async function buildDashboard(query) {
     disclaimer: DISCLAIMER
   };
 
-  return { meta, overview: ov, review, themes, picks, lowbuy, opportunities: opps, boards, fundFlow, relay, ai, prevLadder };
+  return { meta, overview: ov, review, themes, picks, lowbuy, opportunities: opps, limitDownPool: pools.dt || [], boards, fundFlow, relay, ai, prevLadder, firstBoardSeed: seed };
 }
 
 /* ─────────── 涨停回调到支撑位（独立模块，避免拖慢主看板） ─────────── */
@@ -395,6 +398,25 @@ async function buildPullback(query) {
   return { meta, summary, methodology: an.PULLBACK_METHOD, list };
 }
 
+/** 从东财涨停 / 炸板池提取个股当日封单快照（分时图用）；未入池返回 null */
+function stockSeal(pools, code) {
+  const p = pools || {};
+  const rows = [...(Array.isArray(p.zt) ? p.zt : []), ...(Array.isArray(p.zb) ? p.zb : [])];
+  const x = rows.find(r => String(r && r.code) === code);
+  if (!x) return null;
+  return {
+    code, date: p.date || null, kind: x.kind || null,
+    price: x.price === undefined ? null : x.price,
+    limitUpPrice: x.limitUpPrice === undefined ? null : x.limitUpPrice,
+    sealFund: x.sealFund === undefined ? null : x.sealFund,
+    sealFundRatio: x.sealFundRatio === undefined ? null : x.sealFundRatio,
+    firstSeal: x.firstSeal || null, lastSeal: x.lastSeal || null,
+    brokenCount: x.brokenCount === undefined ? null : x.brokenCount,
+    boards: x.boards === undefined ? null : x.boards,
+    source: p.source || null
+  };
+}
+
 /**
  * 个股K线弹窗聚合：一次性返回日K / 周K / 筹码峰 + 实时快照。
  * 筹码峰为模型估算，明确标注口径；所有K线数据来自 datasource，本函数不产生行情数字。
@@ -404,13 +426,14 @@ async function getStockChart(query) {
   if (!/^\d{6}$/.test(code)) return { error: '缺少有效的 6 位股票代码', code: code || null };
   const t0 = Date.now();
   const dayLimit = 160, weekLimit = 80;
-  const [day, week, quotes, minute, fundHistory, fundNow] = await Promise.all([
+  const [day, week, quotes, minute, fundHistory, fundNow, pools] = await Promise.all([
     ds.getKlineData(code, dayLimit).catch(() => ({ rows: [], source: null, adjusted: null })),
     ds.getPeriodKline(code, 'week', weekLimit).catch(() => ({ rows: [], source: null, adjusted: false })),
     ds.getQQQuotes([code]).catch(() => ({})),
     ds.getMinute(code).catch(() => ({ rows: [], source: null, reason: '分时接口暂不可用' })),
     ds.getFundHistory(code, 160).catch(() => ({ rows: [], source: null, reason: '资金流历史暂不可用' })),
-    ds.getStockFundNow(code).catch(() => ({ source: null, reason: '资金快照暂不可用' }))
+    ds.getStockFundNow(code).catch(() => ({ source: null, reason: '资金快照暂不可用' })),
+    ds.getPools().catch(() => ({}))
   ]);
   const fundWeek = ds.weeklyFund(fundHistory.rows || []).slice(-weekLimit);
   const q = quotes[code] || {};
@@ -438,6 +461,7 @@ async function getStockChart(query) {
     day: { rows: day.rows, source: day.source, adjusted: day.adjusted, asOf: day.asOf },
     week: { rows: week.rows, source: week.source, adjusted: week.adjusted, asOf: week.asOf, reason: week.reason || null },
     minute: { rows: minute.rows || [], source: minute.source || null, date: minute.date || null, asOf: minute.asOf || null, reason: minute.reason || null },
+    seal: stockSeal(pools, code),
     fund: {
       day: { rows: fundHistory.rows || [], source: fundHistory.source || null, reason: fundHistory.reason || null, name: fundHistory.name || null },
       week: { rows: fundWeek, source: fundHistory.source || null, reason: fundHistory.reason || null },
@@ -1120,6 +1144,295 @@ async function getAuction(query, force) {
   return auctionCache.inflight;
 }
 
+
+/* ─────────── 集合竞价 · 9:25 首板预测（落盘 / 回填 / 校准） ─────────── */
+const PRED_DIR = path.join(__dirname, 'data', 'predictions');
+try { fs.mkdirSync(PRED_DIR, { recursive: true }); } catch (e) { /* 只读环境忽略 */ }
+const predictCache = { at: 0, key: '', value: null, inflight: null };
+const predR1 = x => Math.round(x * 10) / 10;   // 保留1位小数
+const predBoardOf = code => { const c = String(code || ''); if (/^(30|68[89])/.test(c)) return '创业板/科创'; if (/^[48]/.test(c) || /^92/.test(c)) return '北交所'; return '主板'; };
+const PRED_CALIB_MIN_DAYS = 20;
+
+function predFilePath(date) {
+  const d = String(date || '').replace(/\D/g, '');
+  return path.join(PRED_DIR, d + '.json');
+}
+function readPrediction(date) {
+  try {
+    const txt = fs.readFileSync(predFilePath(date), 'utf8');
+    return JSON.parse(txt);
+  } catch (e) { return null; }
+}
+function writePrediction(date, obj) {
+  try {
+    fs.writeFileSync(predFilePath(date), JSON.stringify(obj, null, 2), 'utf8');
+    return true;
+  } catch (e) { return false; }
+}
+function listPredictionDates() {
+  try {
+    return fs.readdirSync(PRED_DIR).filter(f => /^\d{8}\.json$/.test(f)).map(f => f.slice(0, 8)).sort();
+  } catch (e) { return []; }
+}
+
+/** 从回填记录计算各信号分档实测封板率；满20交易日才返回校准表 */
+function buildCalibration() {
+  const dates = listPredictionDates();
+  const bucketAgg = {};
+  let filledDays = 0, totalSamples = 0, sealedTotal = 0;
+  const bounds = [[0, 50], [50, 60], [60, 70], [70, 80], [80, 101]];
+  dates.forEach(d => {
+    const rec = readPrediction(d);
+    if (!rec || !rec.list || !rec.backfilled) return;
+    let hasResult = false;
+    rec.list.forEach(x => {
+      if (x.result === null || x.result === undefined) return;
+      hasResult = true; totalSamples++;
+      if (x.result === 1) sealedTotal++;
+      const b = bounds.find(r => x.score >= r[0] && x.score < r[1]);
+      if (!b) return;
+      const key = b[0] + '_' + b[1];
+      if (!bucketAgg[key]) bucketAgg[key] = { min: b[0], max: b[1], sealed: 0, n: 0 };
+      bucketAgg[key].n++; if (x.result === 1) bucketAgg[key].sealed++;
+    });
+    if (hasResult) filledDays++;
+  });
+  const overallRate = totalSamples ? predR1(sealedTotal / totalSamples * 100) : null;
+  const buckets = Object.values(bucketAgg).map(b => ({
+    min: b.min, max: b.max, n: b.n,
+    prob: b.n >= 5 ? predR1((b.sealed + 0.5) / (b.n + 1) * 100) : null,
+    rate: predR1(b.sealed / b.n * 100)
+  }));
+  return {
+    filledDays, totalSamples, overallRate, buckets,
+    ready: filledDays >= PRED_CALIB_MIN_DAYS,
+    minDays: PRED_CALIB_MIN_DAYS
+  };
+}
+
+/** 该交易日是否已经收盘、可以回填：历史日恒可；当天仅盘后可；未来日不可（避免未来函数） */
+function canBackfill(tradeDate) {
+  const d = String(tradeDate || '').replace(/\D/g, '');
+  if (!/^\d{8}$/.test(d)) return false;
+  const bj = beijingNow();
+  const today = bj.date.replace(/-/g, '');
+  if (d > today) return false;
+  if (d < today) return true;
+  return bj.state === '盘后'; // 当天：收盘后才回填
+}
+
+/** T 日收盘回填：按 tradeDate 取对应交易日的涨停池(首板)/炸板池判定候选是否封住。
+ *  历史日从完整历史池按日期取，当天取实时池；上游该日池为空时保持"待回填"，不误判为未封。 */
+async function backfillPrediction(tradeDate) {
+  const d = String(tradeDate || '').replace(/\D/g, '');
+  const rec = readPrediction(d);
+  if (!rec || !rec.list || rec.backfilled) return rec;
+  if (!canBackfill(d)) return rec;                 // 未收盘：继续待回填
+  const today = beijingNow().date.replace(/-/g, '');
+  let zt = [], zb = [], poolDate = d, poolSource = '';
+  if (d === today) {
+    const pools = await ds.getPools().catch(() => ({}));
+    zt = pools.zt || pools.limitUp || [];
+    zb = pools.zb || pools.broken || [];
+    poolDate = pools.date || d;
+    poolSource = '当日涨停/炸板池';
+  } else {
+    const hist = await ds.getPoolFullHistory(15, true).catch(() => ({ byDate: {} }));
+    const day = (hist.byDate || {})[d] || {};
+    zt = day.zt || [];
+    zb = day.zb || [];
+    poolSource = '历史涨停/炸板池';
+  }
+  // 上游该交易日池数据不可用：如实保持待回填，不用"未封"污染样本
+  if (!zt.length && !zb.length) {
+    rec.backfillReason = poolSource + '暂不可用（' + d + '），保持待回填';
+    return rec;
+  }
+  const sealed = new Set(zt.filter(x => x && (Number(x.boards) || 1) === 1 && !x.isST).map(x => String(x.code).padStart(6, '0')));
+  const broken = new Set(zb.filter(x => x && (Number(x.boards) || 1) === 1 && !x.isST).map(x => String(x.code).padStart(6, '0')));
+  let n = 0;
+  rec.list.forEach(x => {
+    const code = String(x.code || '').padStart(6, '0');
+    if (sealed.has(code)) { x.result = 1; x.resultLabel = '封住首板'; n++; }
+    else if (broken.has(code)) { x.result = 0; x.resultLabel = '炸板未封'; n++; }
+    else { x.result = 0; x.resultLabel = '未封'; n++; }
+  });
+  rec.backfilled = true;
+  rec.backfillAt = new Date().toISOString();
+  rec.backfillPool = { date: poolDate, source: poolSource, zt: zt.length, zb: zb.length };
+  delete rec.backfillReason;
+  rec.stat = { total: rec.list.length, withResult: n, sealed: rec.list.filter(x => x.result === 1).length };
+  writePrediction(d, rec);
+  // 回填后让预测缓存失效，保证下次读取拿到带结果的快照
+  predictCache.key = ''; predictCache.value = null;
+  return rec;
+}
+
+/** 近期涨停池 code→industry 映射，补候选行业热度（零额外请求、盘前可知） */
+function buildIndustryMap(history) {
+  const map = {};
+  ((history && history.dates) || []).slice(-3).forEach(d => {
+    const day = (history && history.byDate && history.byDate[d.date]) || {};
+    ((day.zt || []).concat(day.zb || [])).forEach(x => {
+      if (x && x.code && x.industry) {
+        if (!map[x.code]) map[x.code] = x.industry;
+      }
+    });
+  });
+  return map;
+}
+
+async function buildPredict(query) {
+  const t0 = Date.now();
+  const f = { ...query }; delete f._; delete f.force; delete f.mode;
+  const replayDate = f.date ? String(f.date).replace(/\D/g, '') : null;
+
+  // 校准数据（满20日才用实测概率）
+  const calib = buildCalibration();
+
+  // 回放：直接读落盘快照；若已被覆盖为"待回填"但当日已收盘，则实时拉取对应日池数据回填
+  if (replayDate) {
+    let rec = readPrediction(replayDate);
+    if (!rec) {
+      return { meta: { ...beijingNow(), generatedAt: new Date().toISOString(), elapsedMs: Date.now() - t0, disclaimer: DISCLAIMER },
+        available: false, reason: '该交易日无预测快照记录（预测从系统启用日起每日落盘）；系统不填充推测数据。' };
+    }
+    if (!rec.backfilled && canBackfill(replayDate)) {
+      rec = await backfillPrediction(replayDate) || rec;
+    }
+    const freshCalib = buildCalibration();
+    const g = an.auctionPredict([], {}, { dates: [], byDate: {} }, { tradeDate: replayDate });
+    g.list = rec.list || [];
+    g.summary = rec.summary || g.summary;
+    g.tradeDate = replayDate;
+    g.baseRate = rec.baseRate || g.baseRate;
+    g.calibration = {
+      ...(rec.calibration || g.calibration),
+      mode: freshCalib.ready ? 'empirical' : 'heuristic',
+      days: freshCalib.filledDays,
+      label: freshCalib.ready ? '已用 ' + freshCalib.filledDays + ' 日实测校准' : '经验估计（待积累实测）',
+      note: freshCalib.ready ? '概率已按累计 ' + freshCalib.filledDays + ' 交易日的真实回填结果分档校准'
+        : '累计真实回填满 ' + freshCalib.minDays + ' 个交易日后切换为实测概率；当前已回填 ' + freshCalib.filledDays + ' 日'
+    };
+    g.stat = rec.stat || null;
+    g.backfillPool = rec.backfillPool || null;
+    g.replay = true;
+    g.note = '历史预测快照回放（9:25 落盘的原始预测，未被后续结果污染）；' + (rec.backfilled ? '已回填当日真实结果。' : (rec.backfillReason || '尚未回填结果。'));
+    return { meta: { ...beijingNow(), generatedAt: new Date().toISOString(), elapsedMs: Date.now() - t0, replay: true, backfilled: !!rec.backfilled, calibration: freshCalib, disclaimer: DISCLAIMER }, ...g };
+  }
+
+  // 实时/回演：抓全市场竞价快照
+  const uni = await ds.getUniverse(true).catch(() => ({ list: [] }));
+  const snapAll = (uni.list || []).filter(r => Number.isFinite(Number(r.open)) && Number(r.prevClose) > 0 && Number(r.open) > 0)
+    .map(r => ({ code: String(r.code || '').padStart(6, '0'), name: r.name, open: Number(r.open), prevClose: Number(r.prevClose), floatCap: r.floatCap }));
+  const cand0 = snapAll.filter(r => {
+    const gap = (r.open / r.prevClose - 1) * 100;
+    return gap >= 1.5 && gap <= 9.8 && !/ST|退/i.test(r.name || '');
+  });
+  // 竞价量比 + 竞价成交额（腾讯快照；9:15~9:30 为真实竞价数据，盘后退化为全天，禁用竞价额）
+  const qq = await ds.getQQQuotes(cand0.map(r => r.code), { ttl: 8000 }).catch(() => ({}));
+  const sessionState = beijingNow().state;
+  const inAuction = sessionState === '集合竞价';
+  cand0.forEach(r => {
+    const q = qq[r.code];
+    if (q) {
+      r.volRatio = q.volRatio; r.industry = ''; r.board = '';
+      // 竞价成交额：仅集合竞价时段的快照成交额是竞价额；盘后为全天成交额，不可当竞价额用
+      r.auctionAmount = (inAuction && Number.isFinite(q.amountWan) && q.amountWan > 0)
+        ? q.amountWan * 1e4 : null;
+    } else {
+      r.auctionAmount = null;
+    }
+  });
+  // 候选日K（昨日量能）
+  const km = {};
+  const kd = await limitedMap(cand0.map(r => r.code), 6, async c => {
+    try { return [c, await ds.getKline(c, 60)]; } catch (e) { return [c, []]; }
+  });
+  kd.forEach(p => { if (p && p[0]) km[p[0]] = p[1] || []; });
+  // 历史池（题材热度 + 行业映射）
+  const history = await ds.getPoolFullHistory(12).catch(() => ({ dates: [], byDate: {} }));
+  const indMap = buildIndustryMap(history);
+  cand0.forEach(r => {
+    if (indMap[r.code]) r.industry = indMap[r.code];
+    if (!r.board) r.board = predBoardOf(r.code);
+  });
+
+  const tradeDate = beijingNow().date.replace(/-/g, '');
+  const g = an.auctionPredict(cand0, km, history, {
+    tradeDate,
+    baseRate: (calib.ready && calib.overallRate !== null) ? calib.overallRate : 8,
+    calibratedBuckets: calib.ready ? calib.buckets : null,
+    calibratedDays: calib.filledDays
+  });
+  // 落盘（只保留必要字段，避免快照过大）
+  const rec = {
+    tradeDate, generatedAt: new Date().toISOString(),
+    baseRate: g.baseRate, calibration: g.calibration, summary: g.summary,
+    list: g.list.map(x => ({
+      code: x.code, name: x.name, industry: x.industry, board: x.board,
+      gap: x.gap, volRatio: x.volRatio, floatCap: x.floatCap,
+      auctionAmount: x.auctionAmount, auctionTurnover: x.auctionTurnover, auctionUsable: x.auctionUsable,
+      baseScore: x.baseScore,
+      score: x.score, tier: x.tier, tierLabel: x.tierLabel, expProb: x.expProb, probLabel: x.probLabel,
+      oneWord: x.oneWord, signals: x.signals, rank: x.rank
+    })),
+    backfilled: false
+  };
+  const saved = writePrediction(tradeDate, rec);
+  // 收盘后"生成当前"也实时回填一次：拉取当日涨停/炸板池，把真实结果并入返回列表
+  let filled = rec, gList = g.list;
+  if (canBackfill(tradeDate)) {
+    filled = await backfillPrediction(tradeDate) || rec;
+    if (filled.backfilled) {
+      const resByCode = {};
+      filled.list.forEach(x => { resByCode[String(x.code).padStart(6, '0')] = x; });
+      gList = g.list.map(x => {
+        const r = resByCode[String(x.code).padStart(6, '0')];
+        return r ? { ...x, result: r.result, resultLabel: r.resultLabel } : x;
+      });
+    }
+  }
+  const state = beijingNow();
+  // 回填可能刚完成，重算校准累计，避免展示天数滞后一天
+  const freshCalib = filled.backfilled ? buildCalibration() : calib;
+  const gCal = { ...g.calibration,
+    mode: freshCalib.ready ? 'empirical' : 'heuristic',
+    days: freshCalib.filledDays,
+    label: freshCalib.ready ? '已用 ' + freshCalib.filledDays + ' 日实测校准' : '经验估计（待积累实测）',
+    note: freshCalib.ready ? '概率已按累计 ' + freshCalib.filledDays + ' 交易日的真实回填结果分档校准'
+      : '累计真实回填满 ' + freshCalib.minDays + ' 个交易日后切换为实测概率；当前已回填 ' + freshCalib.filledDays + ' 日'
+  };
+  const meta = {
+    ...state, generatedAt: new Date().toISOString(), elapsedMs: Date.now() - t0,
+    tradeDate, universeCount: snapAll.length, candidates: cand0.length,
+    auctionState: sessionState, auctionAmountEnabled: inAuction,
+    backfilled: !!filled.backfilled, backfillPool: filled.backfillPool || null,
+    klinesOk: cand0.filter(r => Array.isArray(km[r.code]) && km[r.code].length > 1).length,
+    klineSource: ds.getKlineSource(),
+    saved, predictionFile: 'data/predictions/' + tradeDate + '.json',
+    calibration: freshCalib,
+    methodology: an.AUCTION_PREDICT_METHOD,
+    dataSourceNote: '候选=新浪全市场竞价快照（开盘价÷前收）筛高开1.5~9.8%；量比=腾讯实时快照（9:25~9:30为竞价量比，盘后为全天量比）；竞价成交额=腾讯快照成交额（仅集合竞价时段取值，盘后禁用，作惩罚项）；昨日量能/题材热度=腾讯日K与东方财富历史涨停池。概率=经验估计（基准约8%），每日落盘回填，满20日切换实测。均为免费公开快照。',
+    disclaimer: DISCLAIMER
+  };
+  return { meta, ...g, calibration: gCal, list: gList, stat: filled.stat || null, note: filled.backfillReason || (filled.backfilled ? '已实时拉取当日真实封板结果回填。' : g.note) };
+}
+
+async function getPredict(query, force) {
+  const key = JSON.stringify({ date: query.date || '', mode: query.mode || '' });
+  if (!force && predictCache.value && predictCache.key === key && Date.now() - predictCache.at < 300000) return predictCache.value;
+  if (predictCache.inflight) return predictCache.inflight;
+  predictCache.inflight = (async () => {
+    try {
+      const v = await buildPredict(query);
+      predictCache.value = v; predictCache.key = key; predictCache.at = Date.now();
+      return v;
+    } finally { predictCache.inflight = null; }
+  })();
+  return predictCache.inflight;
+}
+
 /* ─────────── 路由 ─────────── */
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://localhost:' + ACTIVE_PORT);
@@ -1171,6 +1484,10 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === '/api/news') return sendJson(res, await getNews(q, q.force === '1'));
     if (u.pathname === '/api/enlightenment') return sendJson(res, await getEnlightenment(q, q.force === '1'));
     if (u.pathname === '/api/auction') return sendJson(res, await getAuction(q, q.force === '1'));
+    if (u.pathname === '/api/predict') {
+      if (q.mode === 'backfill') return sendJson(res, { ok: true, result: await backfillPrediction(q.date || beijingNow().date.replace(/-/g, '')) });
+      return sendJson(res, await getPredict(q, q.force === '1'));
+    }
     if (u.pathname === '/api/health') return sendJson(res, { ...beijingNow(), port: ACTIVE_PORT, health: ds.getHealth(), ai: aiStatus(), disclaimer: DISCLAIMER });
     if (u.pathname === '/api/search') {
       const kw = String(q.q || '').trim();
@@ -1204,14 +1521,41 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, { list, total: list.length, asOf: uni.asOf || null, source: ds.SOURCE_META.sina.label });
     }
     if (u.pathname === '/api/ladder') {
-      const hist = await ds.getPoolFullHistory(12).catch(() => ({ dates: [], byDate: {} }));
+      const hist = await ds.getPoolFullHistory(15, true).catch(() => ({ dates: [], byDate: {} }));
       const dates = (hist.dates || []).map(x => x.date);
       const wanted = /^\d{8}$/.test(q.date || '') ? q.date : (dates[0] || null);
-      const zt = (wanted && (hist.byDate[wanted] || {}).zt) || [];
+      const zt = ((wanted && (hist.byDate[wanted] || {}).zt) || []).slice();
       const zb = (wanted && (hist.byDate[wanted] || {}).zb) || [];
+      const dt = (wanted && (hist.byDate[wanted] || {}).dt) || [];
+      // 历史回放标记：只用截至该日的历史窗口统计概率，不含该日之后的任何结果，避免未来函数
+      const idx = dates.indexOf(wanted);
+      const histUpTo = idx >= 0
+        ? { dates: (hist.dates || []).slice(idx), byDate: hist.byDate, source: hist.source }
+        : hist;
+      const dayPools = { zt, zb, dt, date: wanted };
+      let seedStat = null, seedMarks = {}, dragonEdges = {};
+      try {
+        const seed = an.firstBoardSeedBacktest(histUpTo, dayPools, { asOf: wanted });
+        seedMarks = seed.marks || {};
+        seedStat = {
+          days: seed.days, samples: seed.samples, baseRate: seed.baseRate,
+          dragonBaseRate: seed.dragonBaseRate, tiers: seed.tiers,
+          factors: seed.factors, note: seed.note, asOf: wanted
+        };
+      } catch (e) { console.warn('[ladder] 首板种子标记失败：' + e.message); }
+      try { dragonEdges = an.dragonEdgeMarks(dayPools, histUpTo); }
+      catch (e) { console.warn('[ladder] 历史优势组合标记失败：' + e.message); }
+      const markedZt = zt.map(x => Object.assign({}, x, {
+        seedMark: seedMarks[x.code] || null,
+        dragonEdge: dragonEdges[x.code] || null
+      }));
       return sendJson(res, {
-        date: wanted, dates: dates.map(d => ({ date: d, count: ((hist.byDate[d] || {}).zt || []).length })),
-        zt, zbCount: zb.length, source: ds.SOURCE_META.emPool.label, asOf: new Date().toISOString()
+        date: wanted, dates: dates.map(d => {
+          const row = hist.byDate[d] || {};
+          return { date: d, count: (row.zt || []).length, dtCount: (row.dt || []).length };
+        }),
+        zt: markedZt, zbCount: zb.length, dt, firstBoardSeed: seedStat,
+        source: ds.SOURCE_META.emPool.label, asOf: new Date().toISOString()
       });
     }
     if (u.pathname === '/api/fundflow') return sendJson(res, await ds.getFundFlow());
@@ -1226,11 +1570,26 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === '/api/stock/minute') {
       const code = String(q.code || '').replace(/\D/g, '').slice(0, 6);
       if (!/^\d{6}$/.test(code)) return sendJson(res, { error: '缺少有效的 6 位股票代码' }, 400);
-      const [minute, quotes] = await Promise.all([
+      const date = String(q.date || '').replace(/\D/g, '');
+      if (date) {
+        // 历史某日分时：腾讯 day/query 仅回溯最近 5 个交易日；当日封单/资金快照不可张冠李戴，历史模式不返回
+        const minute = await ds.getMinuteHistory(code, date).catch(() => ({ rows: [], date, source: null, reason: '历史分时接口暂不可用' }));
+        const quotes = await ds.getQQQuotes([code]).catch(() => ({}));
+        return sendJson(res, {
+          code, date, minute, quote: quotes[code] || {}, seal: null, historical: true,
+          fund: { now: null }, asOf: new Date().toISOString()
+        });
+      }
+      const [minute, quotes, pools, fundNow] = await Promise.all([
         ds.getMinute(code).catch(() => ({ rows: [], source: null, reason: '上游不可用' })),
-        ds.getQQQuotes([code]).catch(() => ({}))
+        ds.getQQQuotes([code]).catch(() => ({})),
+        ds.getPools().catch(() => ({})),
+        ds.getStockFundNow(code).catch(() => ({ source: null, reason: '资金快照暂不可用' }))
       ]);
-      return sendJson(res, { code, minute, quote: quotes[code] || {}, asOf: new Date().toISOString() });
+      return sendJson(res, {
+        code, minute, quote: quotes[code] || {}, seal: stockSeal(pools, code),
+        fund: { now: fundNow }, asOf: new Date().toISOString()
+      });
     }
     if (u.pathname === '/api/universe') {
       const uni = await ds.getUniverse();

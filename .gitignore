@@ -1,0 +1,9 @@
+# 运行时生成的预测快照 / 回测样本数据
+data/
+
+# 本地调试脚本与浏览器缓存
+.dg-check/
+scripts/
+
+# 自动化本地运行状态
+.workbuddy/memory/automations/
