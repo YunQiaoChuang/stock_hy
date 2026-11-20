@@ -518,7 +518,7 @@
     const fundRow = x => '<div class="ff-row"><span class="ff-name">' + E(x.name) + '</span>' +
       '<span class="ff-pct ' + (x.pct > 0 ? 'up' : x.pct < 0 ? 'down' : '') + '">' + (x.pct > 0 ? '+' : '') + N(x.pct) + '%</span>' +
       '<span class="ff-net ' + (x.net > 0 ? 'up' : 'down') + '">' + (x.net > 0 ? '+' : '') + amtYi(x.net) + ' 亿</span></div>';
-    const bk = boards || {}, indBoards = bk.industry || [], conBoards = bk.concept || [];
+    const bk = d.boards || {}, indBoards = bk.industry || [], conBoards = bk.concept || [];
     const boardRows = list => list.slice().sort((a, b) => (Number(b.pct) || 0) - (Number(a.pct) || 0)).slice(0, 8).map(x =>
       '<div class="bk-row"><span class="bk-name">' + E(x.name) + '</span>' +
       '<span class="bk-pct ' + (x.pct > 0 ? 'up' : x.pct < 0 ? 'down' : '') + '">' + (x.pct > 0 ? '+' : '') + N(x.pct) + '%</span>' +
