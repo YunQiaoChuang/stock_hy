@@ -1180,6 +1180,17 @@ const server = http.createServer(async (req, res) => {
       }));
       return sendJson(res, { list, total: list.length, asOf: uni.asOf || null, source: ds.SOURCE_META.sina.label });
     }
+    if (u.pathname === '/api/ladder') {
+      const hist = await ds.getPoolFullHistory(12).catch(() => ({ dates: [], byDate: {} }));
+      const dates = (hist.dates || []).map(x => x.date);
+      const wanted = /^\d{8}$/.test(q.date || '') ? q.date : (dates[0] || null);
+      const zt = (wanted && (hist.byDate[wanted] || {}).zt) || [];
+      const zb = (wanted && (hist.byDate[wanted] || {}).zb) || [];
+      return sendJson(res, {
+        date: wanted, dates: dates.map(d => ({ date: d, count: ((hist.byDate[d] || {}).zt || []).length })),
+        zt, zbCount: zb.length, source: ds.SOURCE_META.emPool.label, asOf: new Date().toISOString()
+      });
+    }
     if (u.pathname === '/api/fundflow') return sendJson(res, await ds.getFundFlow());
     if (u.pathname === '/api/boards') return sendJson(res, await ds.getSectorBoards());
     if (u.pathname === '/api/pools') return sendJson(res, await ds.getPools());

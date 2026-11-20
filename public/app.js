@@ -88,6 +88,7 @@
     dgOfflineTimer: null,
     auction: null, auctionLoading: false, auctionError: null, auctionAt: 0,
     auctionOpts: { days: 10 }, auctionMethodOpen: false,
+    ladderDate: null, ladderData: null, ladderDates: [], ladderLoading: false,
     news: null, newsLoading: false, newsError: null, newsAt: 0, newsSince: null,
     newsInterval: 30, newsWindow: 72, newsPaused: false, newsFilter: 'all',
     newsKeyword: '', newsMethodOpen: false, newsShowAll: false,
@@ -150,6 +151,7 @@
       b.onclick = () => { if (S.chart.data && b.dataset.period !== S.chart.period) { S.chart.period = b.dataset.period; S.chart.view = null; S.chart.lockIdx = null; if (S.chart.period !== 'minute') stopMinuteTimer(); renderStockChart(); } };
     });
     loadBoards();
+    initLadderDates();
     const qs = new URLSearchParams(location.search);
     const initTab = qs.get('tab');
     if (initTab && ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'auction', 'enlighten'].indexOf(initTab) >= 0) switchTab(initTab);
@@ -428,7 +430,9 @@
       name: b + '板', value: ov.ladder[b], label: ov.ladder[b] + ' 家', color: '#d92b2b'
     }));
     const space = ov.spaceBoard.length ? ov.spaceBoard.map(x => E(x.name) + '(' + E(x.code) + ') ' + x.boards + '板 · ' + E(x.industry)).join('；') : '无';
-    const ztAll = (d.opportunities && d.opportunities.zt) || [];
+    // 天梯数据源：若用户选了历史日期，用 /api/ladder 返回的该日涨停池；否则用当日实时池
+    const ladderIsHistory = !!(S.ladderDate && S.ladderData && S.ladderData.date === S.ladderDate);
+    const ztAll = ladderIsHistory ? (S.ladderData.zt || []) : ((d.opportunities && d.opportunities.zt) || []);
     const byBoard = new Map();
     ztAll.forEach(x => { const b = Number(x.boards) || 1; if (!byBoard.has(b)) byBoard.set(b, []); byBoard.get(b).push(x); });
     const boardOfCell = b => b >= 5 ? 'em-tier-5' : b === 4 ? 'em-tier-4' : b === 3 ? 'em-tier-3' : b === 2 ? 'em-tier-2' : 'em-tier-1';
@@ -570,8 +574,17 @@
     $('pane-review').innerHTML =
       '<div class="sec"><div class="sec-head"><h3>一、盘面结构与状态诊断</h3>' + src('新浪财经全市场快照 / 腾讯证券指数 / 东方财富涨停池，时点 ' + TICK(m)) + '</div>' +
       '<div class="grid2"><div class="card pad"><div class="fact-list">' + facts + '</div></div>' +
-      '<div class="card pad"><h4 style="font-size:12.5px;margin-bottom:6px">连板天梯 <span class="small muted" style="font-weight:400">（东方财富式 · 按板级分层）</span></h4>' +
-      '<div class="em-ladder">' + (tiersHtml || '<div class="empty">当日无连板梯队数据</div>') + '</div>' +
+      '<div class="card pad"><div class="em-ladder-head"><h4 style="font-size:12.5px;margin-bottom:6px">连板天梯 <span class="small muted" style="font-weight:400">（东方财富式 · 按板级分层）</span></h4>' +
+      '<select class="sel" id="ladderDate" title="切换交易日回看历史连板天梯">' +
+      (S.ladderDates.length
+        ? S.ladderDates.map(x => '<option value="' + E(x.date) + '"' + (x.date === (S.ladderDate || (m.poolDate || '')) ? ' selected' : '') + '>' +
+          E(String(x.date).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3')) + '（' + x.count + ' 涨停）</option>').join('')
+        : '<option value="' + E(m.poolDate || '') + '">' + E(m.poolDate || '当日') + '</option>') +
+      '</select></div>' +
+      (ladderIsHistory && S.ladderDate !== m.poolDate ? '<div class="note-box" style="margin:0 0 8px">历史回放：' +
+        E(String(S.ladderDate).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3')) + ' 的涨停池（来源：' + E(S.ladderData.source || '东方财富') +
+        '），板块地位按当日涨停结构判定。<b>这是已发生的历史行情，不是今日机会。</b></div>' : '') +
+      '<div class="em-ladder">' + (S.ladderLoading ? '<div class="empty">载入历史天梯…</div>' : (tiersHtml || '<div class="empty">当日无连板梯队数据</div>')) + '</div>' +
       dgEdgeLegendCard(true) +
       '<div class="note-box">空间板：' + space + '<br>梯队判读：' + E(ov.gap ? '存在断层，按 leader-game 框架属退潮前置信号，需次日 2/3 板补齐确认。' : '梯队连续无断层，情绪延续性优于断层结构。') +
       '<br>板块地位标注规则（按东财行业分组机械判定，非投资建议）：<b class="up">板块龙头</b>=同行业连板最高且封单最强；<b style="color:var(--warn)">反包核心 / 题材龙 / 封单核心</b>=累计板最高 / 连板最高 / 封单最强但不同时满足龙头条件；板块跟风=连板低于行业最高；独苗=行业仅 1 只涨停。<br>每层按封单比降序、首封时间升序排列；封单比 ≥1% 标红、0.3%~1% 标橙、&lt;0.3% 标灰，炸板次数越多风险越高。数据：东方财富涨停池 + 腾讯证券实时快照。' +
@@ -599,6 +612,40 @@
       series: [{ type: 'bar', barMaxWidth: 38, data: ladderItems.map(x => ({ value: x.value, itemStyle: { color: '#d92b2b' } })), label: { show: true, position: 'top', color: '#4b5b6b', fontSize: 10 } }]
     };
     safeChart('chartLadder', ladderOpt, ladderItems);
+    const lsel = $('ladderDate');
+    if (lsel) lsel.onchange = e => loadLadderDate(e.target.value);
+  }
+
+  /** 切换连板天梯交易日：拉历史涨停池，只重渲染复盘区 */
+  async function loadLadderDate(date) {
+    const d = String(date || '');
+    if (!/^\d{8}$/.test(d)) return;
+    S.ladderDate = d;
+    S.ladderLoading = true;
+    renderReview(S.data); // 立刻显示载入态
+    try {
+      const r = await fetch('/api/ladder?date=' + encodeURIComponent(d), { cache: 'no-store' });
+      const j = await r.json();
+      if (j.error) throw new Error(j.error);
+      S.ladderData = j;
+      if (!S.ladderDates.length && j.dates) S.ladderDates = j.dates;
+    } catch (e) {
+      S.ladderData = null;
+      $('alertBox').style.display = '';
+      $('alertBox').textContent = '历史天梯加载失败：' + e.message;
+    } finally {
+      S.ladderLoading = false;
+      renderReview(S.data);
+    }
+  }
+
+  /** 首屏拉取可用交易日列表（轻量，只返回日期与家数） */
+  async function initLadderDates() {
+    try {
+      const r = await fetch('/api/ladder', { cache: 'no-store' });
+      const j = await r.json();
+      if (!j.error && j.dates) S.ladderDates = j.dates;
+    } catch (e) { /* 日期列表非关键，失败则下拉只有当日 */ }
   }
 
   /* ─────────────── 短线推荐 ─────────────── */
