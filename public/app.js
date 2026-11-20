@@ -525,7 +525,7 @@
       '<span class="bk-lead">' + (x.leaderName ? E(x.leaderName) + ' ' + (x.leaderPct > 0 ? '+' : '') + N(x.leaderPct) + '%' : '—') + '</span>' +
       '<span class="bk-mem">' + E(x.members || 0) + ' 只</span></div>').join('');
     const fundHtml = '<div class="sec"><div class="sec-head"><h3>二、资金方向 · 板块与概念分析</h3>' +
-      src('新浪财经资金流向 / 新浪财经行业·概念板块行情，' + (m.poolDate || '—') + ' ' + TICK(m)) + '</div>' +
+      src((ff.source || '资金流向') + ' / 新浪财经行业·概念板块行情，' + (m.poolDate || '—') + ' ' + TICK(m)) + '</div>' +
       '<div class="grid2">' +
       '<div class="card pad"><h4 style="font-size:12.5px;margin-bottom:8px">主力资金方向（行业净流入 Top / 净流出 Top）</h4>' +
       (ffBoards.length
@@ -533,13 +533,22 @@
           '<div><div class="ff-col-head down">净流出前 6</div>' + fundBottom.map(fundRow).join('') + '</div></div>' +
           '<div class="note-box">行业净流入合计 <b class="' + (ff.totalNet > 0 ? 'up' : 'down') + '">' + (ff.totalNet === null ? '—' : amtYi(ff.totalNet) + ' 亿') +
           '</b>；净流入行业 ' + E(ff.upBoards) + ' 个 / 净流出 ' + E(ff.downBoards) + ' 个。' +
-          '<br>口径：新浪按特大单/大单/中单/小单划分，netamount = 流入−流出；为正表示主力净买入，为负表示净流出。仅代表当日成交单的方向统计，不等于资金长期意图。</div>'
+          '<br>口径：' + (ff.source && ff.source.indexOf('腾讯') >= 0
+            ? '腾讯证券板块资金流（zljlr 主力净流入，盘中实时），正为净流入、负为净流出。'
+            : '新浪按特大单/大单/中单/小单划分，netamount = 流入−流出；正为净买入、负为净流出。') +
+          '仅代表当日成交单的方向统计，不等于资金长期意图。</div>'
         : '<div class="empty">' + E(ff.reason || '资金流数据暂不可用') + '</div>') + '</div>' +
       '<div class="card pad"><h4 style="font-size:12.5px;margin-bottom:8px">板块涨幅与领涨股</h4>' +
       '<div class="ff-col-head">行业板块 Top 8</div><div class="bk-list">' + (boardRows(indBoards) || '<div class="empty">无行业板块数据</div>') + '</div>' +
       '<div class="ff-col-head" style="margin-top:10px">概念板块 Top 8</div><div class="bk-list">' + (boardRows(conBoards) || '<div class="empty">无概念板块数据</div>') + '</div>' +
+      (ff.concept && ff.concept.length
+        ? '<div class="ff-col-head" style="margin-top:10px">概念资金方向 Top 6</div>' +
+          '<div class="ff-grid">' +
+          '<div>' + ff.concept.slice().sort((a, b) => b.net - a.net).slice(0, 6).map(fundRow).join('') + '</div>' +
+          '<div>' + ff.concept.slice().sort((a, b) => a.net - b.net).slice(0, 6).map(fundRow).join('') + '</div></div>'
+        : '') +
       '</div></div>' +
-      '<div class="note-box">板块涨跌幅与领涨股为新浪财经公开板块行情；涨停题材分组见下一节「主线题材与生命周期」。资金流与板块行情均为公开接口的当日快照，<b>不构成投资建议</b>。</div></div>';
+      '<div class="note-box">板块涨跌幅与领涨股为新浪财经公开板块行情；资金流主源为腾讯证券、新浪为备用（新浪接口近期不稳定）。涨停题材分组见下一节「主线题材与生命周期」。资金流与板块行情均为公开接口的当日快照，<b>不构成投资建议</b>。</div></div>';
 
     const prevLadderHtml = '<div class="sec"><div class="sec-head"><h3>昨日连板天梯 · 今日晋级情况</h3>' +
       src('东方财富历史涨停池 ' + (pl.prevDate || '—') + ' → 今日涨停池 ' + (pl.currDate || '—') + ' + 腾讯证券实时快照') + '</div>' +
