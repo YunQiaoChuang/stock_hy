@@ -213,6 +213,18 @@ ul.tight li{margin-bottom:2px}
 @keyframes flashDown{0%{background:#dcf5e9}100%{background:transparent}}
 .flash-up{animation:flashUp 1.1s ease-out}.flash-down{animation:flashDown 1.1s ease-out}
 
+/* 复盘：资金方向与板块分析 */
+.ff-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.ff-col-head{font-size:11px;font-weight:700;color:var(--ink2);margin-bottom:5px;padding-bottom:4px;border-bottom:1px solid var(--line2)}
+.ff-col-head.up{color:var(--up)}.ff-col-head.down{color:var(--down)}
+.ff-row,.bk-row{display:flex;align-items:center;gap:8px;font-size:11px;padding:4px 0;border-bottom:1px dashed var(--line2)}
+.ff-row:last-child,.bk-row:last-child{border-bottom:none}
+.ff-name,.bk-name{min-width:78px;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ff-pct,.bk-pct{min-width:52px;text-align:right;font-variant-numeric:tabular-nums}
+.ff-net{min-width:70px;text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
+.bk-lead{flex:1;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bk-mem{color:var(--muted);font-size:10px;white-space:nowrap}
+
 /* 个股搜索框 */
 .stock-search{position:relative;flex:0 1 220px;min-width:170px}
 .stock-search input{width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:7px;font-size:12px;outline:none;background:#fff;color:var(--ink)}

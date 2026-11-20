@@ -162,12 +162,13 @@ async function buildDashboard(query) {
   delete f._;
 
   // 1) 四路数据并行
-  const [universe, pools, indices, boards, prevHistory] = await Promise.all([
+  const [universe, pools, indices, boards, prevHistory, fundFlow] = await Promise.all([
     ds.getUniverse().catch(() => ({ list: [], count: 0, asOf: new Date().toISOString() })),
     ds.getPools().catch(() => ({ zt: [], qs: [], zb: [], dt: [], date: '', asOf: new Date().toISOString() })),
     ds.getIndices().catch(() => []),
     ds.getSectorBoards().catch(() => ({ industry: [], concept: [], asOf: new Date().toISOString() })),
-    ds.getPoolFullHistory(3).catch(() => ({ dates: [], byDate: {}, note: '' }))
+    ds.getPoolFullHistory(3).catch(() => ({ dates: [], byDate: {}, note: '' })),
+    ds.getFundFlow().catch(() => ({ boards: [], totalNet: null, reason: '资金流暂不可用' }))
   ]);
 
   // 2) 板块筛选解析（新浪板块成分股）
@@ -249,7 +250,7 @@ async function buildDashboard(query) {
     disclaimer: DISCLAIMER
   };
 
-  return { meta, overview: ov, review, themes, picks, lowbuy, opportunities: opps, boards, relay, ai, prevLadder };
+  return { meta, overview: ov, review, themes, picks, lowbuy, opportunities: opps, boards, fundFlow, relay, ai, prevLadder };
 }
 
 /* ─────────── 涨停回调到支撑位（独立模块，避免拖慢主看板） ─────────── */
@@ -1108,6 +1109,7 @@ const server = http.createServer(async (req, res) => {
       }));
       return sendJson(res, { list, total: list.length, asOf: uni.asOf || null, source: ds.SOURCE_META.sina.label });
     }
+    if (u.pathname === '/api/fundflow') return sendJson(res, await ds.getFundFlow());
     if (u.pathname === '/api/boards') return sendJson(res, await ds.getSectorBoards());
     if (u.pathname === '/api/pools') return sendJson(res, await ds.getPools());
     if (u.pathname === '/api/quotes') {

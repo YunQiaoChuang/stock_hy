@@ -507,6 +507,36 @@
         '<span class="pl-stock ' + x.cls + '" title="' + E(x.code + ' · ' + (x.industry || '—') + ' · 昨' + x.prevBoards + '板 → 今' + (x.currBoards ? x.currBoards + '板' : x.status)) + '">' +
         E(x.name) + '<b>' + (x.pct === null ? '—' : (x.pct > 0 ? '+' : '') + N(x.pct) + '%') + '</b>' +
         '<i>' + E(x.status) + '</i></span>').join('') + '</div></div>').join('');
+    // 资金方向 + 行业板块 / 概念板块分析（数据：新浪资金流 + 新浪板块行情）
+    const ff = d.fundFlow || {}, ffBoards = ff.boards || [];
+    const amtYi = v => (Number(v) / 1e8).toFixed(2);
+    const fundTop = ffBoards.slice(0, 8), fundBottom = ffBoards.slice(-6).reverse();
+    const fundRow = x => '<div class="ff-row"><span class="ff-name">' + E(x.name) + '</span>' +
+      '<span class="ff-pct ' + (x.pct > 0 ? 'up' : x.pct < 0 ? 'down' : '') + '">' + (x.pct > 0 ? '+' : '') + N(x.pct) + '%</span>' +
+      '<span class="ff-net ' + (x.net > 0 ? 'up' : 'down') + '">' + (x.net > 0 ? '+' : '') + amtYi(x.net) + ' 亿</span></div>';
+    const bk = boards || {}, indBoards = bk.industry || [], conBoards = bk.concept || [];
+    const boardRows = list => list.slice().sort((a, b) => (Number(b.pct) || 0) - (Number(a.pct) || 0)).slice(0, 8).map(x =>
+      '<div class="bk-row"><span class="bk-name">' + E(x.name) + '</span>' +
+      '<span class="bk-pct ' + (x.pct > 0 ? 'up' : x.pct < 0 ? 'down' : '') + '">' + (x.pct > 0 ? '+' : '') + N(x.pct) + '%</span>' +
+      '<span class="bk-lead">' + (x.leaderName ? E(x.leaderName) + ' ' + (x.leaderPct > 0 ? '+' : '') + N(x.leaderPct) + '%' : '—') + '</span>' +
+      '<span class="bk-mem">' + E(x.members || 0) + ' 只</span></div>').join('');
+    const fundHtml = '<div class="sec"><div class="sec-head"><h3>二、资金方向 · 板块与概念分析</h3>' +
+      src('新浪财经资金流向 / 新浪财经行业·概念板块行情，' + (m.poolDate || '—') + ' ' + TICK(m)) + '</div>' +
+      '<div class="grid2">' +
+      '<div class="card pad"><h4 style="font-size:12.5px;margin-bottom:8px">主力资金方向（行业净流入 Top / 净流出 Top）</h4>' +
+      (ffBoards.length
+        ? '<div class="ff-grid"><div><div class="ff-col-head up">净流入前 8</div>' + fundTop.map(fundRow).join('') + '</div>' +
+          '<div><div class="ff-col-head down">净流出前 6</div>' + fundBottom.map(fundRow).join('') + '</div></div>' +
+          '<div class="note-box">行业净流入合计 <b class="' + (ff.totalNet > 0 ? 'up' : 'down') + '">' + (ff.totalNet === null ? '—' : amtYi(ff.totalNet) + ' 亿') +
+          '</b>；净流入行业 ' + E(ff.upBoards) + ' 个 / 净流出 ' + E(ff.downBoards) + ' 个。' +
+          '<br>口径：新浪按特大单/大单/中单/小单划分，netamount = 流入−流出；为正表示主力净买入，为负表示净流出。仅代表当日成交单的方向统计，不等于资金长期意图。</div>'
+        : '<div class="empty">' + E(ff.reason || '资金流数据暂不可用') + '</div>') + '</div>' +
+      '<div class="card pad"><h4 style="font-size:12.5px;margin-bottom:8px">板块涨幅与领涨股</h4>' +
+      '<div class="ff-col-head">行业板块 Top 8</div><div class="bk-list">' + (boardRows(indBoards) || '<div class="empty">无行业板块数据</div>') + '</div>' +
+      '<div class="ff-col-head" style="margin-top:10px">概念板块 Top 8</div><div class="bk-list">' + (boardRows(conBoards) || '<div class="empty">无概念板块数据</div>') + '</div>' +
+      '</div></div>' +
+      '<div class="note-box">板块涨跌幅与领涨股为新浪财经公开板块行情；涨停题材分组见下一节「主线题材与生命周期」。资金流与板块行情均为公开接口的当日快照，<b>不构成投资建议</b>。</div></div>';
+
     const prevLadderHtml = '<div class="sec"><div class="sec-head"><h3>昨日连板天梯 · 今日晋级情况</h3>' +
       src('东方财富历史涨停池 ' + (pl.prevDate || '—') + ' → 今日涨停池 ' + (pl.currDate || '—') + ' + 腾讯证券实时快照') + '</div>' +
       (pl.available && (pl.tiers || []).length
@@ -533,18 +563,19 @@
       '<div class="note-box">空间板：' + space + '<br>梯队判读：' + E(ov.gap ? '存在断层，按 leader-game 框架属退潮前置信号，需次日 2/3 板补齐确认。' : '梯队连续无断层，情绪延续性优于断层结构。') +
       '<br>板块地位标注规则（按东财行业分组机械判定，非投资建议）：<b class="up">板块龙头</b>=同行业连板最高且封单最强；<b style="color:var(--warn)">反包核心 / 题材龙 / 封单核心</b>=累计板最高 / 连板最高 / 封单最强但不同时满足龙头条件；板块跟风=连板低于行业最高；独苗=行业仅 1 只涨停。<br>每层按封单比降序、首封时间升序排列；封单比 ≥1% 标红、0.3%~1% 标橙、&lt;0.3% 标灰，炸板次数越多风险越高。数据：东方财富涨停池 + 腾讯证券实时快照。' +
       '</div></div></div></div>' +
+      fundHtml +
       prevLadderHtml +
 
-      '<div class="sec"><div class="sec-head"><h3>二、主线题材与生命周期</h3>' + src('东方财富涨停池行业归属 + 新浪财经板块行情，交易日 ' + (m.poolDate || '—')) + '</div>' +
+      '<div class="sec"><div class="sec-head"><h3>三、主线题材与生命周期</h3>' + src('东方财富涨停池行业归属 + 新浪财经板块行情，交易日 ' + (m.poolDate || '—')) + '</div>' +
       '<div class="grid2">' + (themes || '<div class="empty">当前无涨停题材分组数据</div>') + '</div>' +
       '<div class="note-box">题材阶段完全由量价结构（涨停扩散数 / 连板高度 / 梯队完整度 / 炸板负反馈率 / 板块涨跌幅）机械推导，本页评分不纳入新闻与公告数据（消息面见「明日龙头」模块独立监控）；阶段判断为前瞻性推演，需次日盘面验证。</div></div>' +
 
-      '<div class="sec"><div class="sec-head"><h3>三、明日博弈焦点</h3><span class="src">依据：leader-game 涨停结构 + theme-lifecycle 阶段研判</span></div><div class="grid3">' + focus + '</div></div>' +
+      '<div class="sec"><div class="sec-head"><h3>四、明日博弈焦点</h3><span class="src">依据：leader-game 涨停结构 + theme-lifecycle 阶段研判</span></div><div class="grid3">' + focus + '</div></div>' +
 
-      '<div class="sec"><div class="sec-head"><h3>四、条件化操作框架</h3><span class="src">条件 → 动作 → 风险，非买卖指令</span></div>' +
+      '<div class="sec"><div class="sec-head"><h3>五、条件化操作框架</h3><span class="src">条件 → 动作 → 风险，非买卖指令</span></div>' +
       '<div class="card pad"><div class="plan-row plan-head"><div class="col">触发条件</div><div class="col">对应动作</div><div class="col">风险 / 反例</div></div>' + planRows + '</div></div>' +
 
-      '<div class="sec"><div class="sec-head"><h3>五、风险提示与数据边界</h3></div><div class="card pad"><ul class="tight">' + risks + '</ul>' +
+      '<div class="sec"><div class="sec-head"><h3>六、风险提示与数据边界</h3></div><div class="card pad"><ul class="tight">' + risks + '</ul>' +
       '<div class="note-box">本模块为复盘与观察框架，不预测指数涨跌方向；所有仓位表述均为研究框架示例，需结合个人风险承受能力独立判断。</div></div></div>';
 
     const ladderOpt = {
@@ -2911,6 +2942,12 @@
     }
     // 昨收虚线
     a.push('<line x1="' + L + '" y1="' + Y(prev).toFixed(1) + '" x2="' + (W - R) + '" y2="' + Y(prev).toFixed(1) + '" stroke="#8593a3" stroke-dasharray="4 4"/>');
+    // 集合竞价结果：开盘价即 9:25 竞价成交价，单独虚线标注
+    const auction = Number(quote && quote.open) > 0 ? Number(quote.open) : null;
+    if (auction && Math.abs(auction - prev) / prev > 0.0001) {
+      a.push('<line x1="' + L + '" y1="' + Y(auction).toFixed(1) + '" x2="' + (W - R) + '" y2="' + Y(auction).toFixed(1) + '" stroke="#6d4bd6" stroke-dasharray="2 5"/>');
+      a.push('<text x="' + L + '" y="' + (Y(auction) - 5).toFixed(1) + '" font-size="10" fill="#6d4bd6">竞价开盘 ' + auction.toFixed(2) + '（' + ((auction - prev) / prev * 100 > 0 ? '+' : '') + ((auction - prev) / prev * 100).toFixed(2) + '%）</text>');
+    }
     // 成交量柱（每分钟）
     const maxV = Math.max(1, ...rows.map(x => x.volume || 0));
     const bw = Math.max(1, PW / rows.length * 0.62);
@@ -2959,6 +2996,10 @@
         (trading
           ? '<b>当前为交易时段，每 12 秒自动重拉分时</b>；盘后自动停止。'
           : '<b>当前为非交易时段，展示最近一个交易日的完整分时，不再变动</b>；开盘后自动恢复刷新。') +
+        '<br><b>关于集合竞价：</b>腾讯分时接口从 09:30 开始返回分钟数据，<b>不含 9:15–9:25 的竞价过程</b>（竞价没有连续分钟成交）。' +
+        '图中的紫色虚线是 9:25 竞价成交价（即开盘价' + (q.open > 0 ? ' ' + N(q.open) : '，当前快照未取得') + '），' +
+        '竞价涨跌幅 ' + (q.open > 0 && q.prevClose > 0 ? (q.open > q.prevClose ? '+' : '') + N((q.open - q.prevClose) / q.prevClose * 100) + '%' : '—') +
+        '；竞价期间的委托撤单过程不展示。' +
         '<b>分钟级数据，不是逐笔成交，不构成投资建议。</b></div>';
       syncMinuteTimer();
       return;
