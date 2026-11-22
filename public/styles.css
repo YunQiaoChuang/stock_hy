@@ -321,15 +321,17 @@ ul.tight li{margin-bottom:2px}
 .ld-tab + .ld-tab{border-left:1px solid var(--line)}
 .ld-tab:hover{background:#eef2f7}
 .ld-tab.active{background:var(--down);color:#fff}
-/* 跌停天梯：封单强度分层（绿=跌，越深封得越死） */
+.ld-marks{font-size:11px;white-space:nowrap;padding-left:2px;user-select:none}
+.ld-marks input{width:13px;height:13px;margin:0}
+/* 跌停天梯：按连续跌停天数分层（绿=跌，层级越高绿越深） */
 .dt-summary{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:0 0 9px}
 .em-tier.dt-tier{border-color:#cfe9dd}
 .em-tier.dt-tier .em-tier-head{background:#f3faf6;border-bottom-color:#dcefe5}
-.dt-tier-3 .em-tier-badge{background:#0b7a4b}
-.dt-tier-2 .em-tier-badge{background:#0f9960}
-.dt-tier-1 .em-tier-badge{background:#5bb58a}
-.dt-tier-0 .em-tier-badge{background:#93b8a5}
-.dt-tier-desc{font-size:10px;color:var(--muted)}
+.dt-day-3 .em-tier-badge{background:#065f46}
+.dt-day-2 .em-tier-badge{background:#0b7a4b}
+.dt-day-1 .em-tier-badge{background:#2e9e6b}
+.dt-tier-mark{font-size:10px;padding:1px 7px;border-radius:4px;background:#0b7a4b;color:#fff;font-weight:700}
+.dt-tier-mark-inline{color:#0b7a4b;font-weight:700}
 .dt-stock{flex:1 1 150px;min-width:140px;max-width:220px}
 .dt-stock.dt-hot{border-color:var(--warn);background:var(--warn-bg);box-shadow:inset 0 0 0 1px rgba(217,119,6,.18)}
 .dt-hot-tag{flex:none;padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700;background:var(--warn);color:#fff;white-space:nowrap}

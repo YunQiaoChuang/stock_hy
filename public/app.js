@@ -39,6 +39,14 @@
   function klSaveColors() {
     try { localStorage.setItem(KL_COLOR_KEY, JSON.stringify(S.klColors)); } catch (e) { /* 隐私模式下忽略 */ }
   }
+  /* ── 连板天梯「晋级标记」显示开关：★晋级概率角标 + 历史优势组合彩色边框，存 localStorage ── */
+  const LADDER_MARKS_KEY = 'stockhy_ladder_marks_v1';
+  function ladderMarksLoad() {
+    try { return localStorage.getItem(LADDER_MARKS_KEY) !== '0'; } catch (e) { return true; }
+  }
+  function ladderMarksSave() {
+    try { localStorage.setItem(LADDER_MARKS_KEY, S.showLadderMarks ? '1' : '0'); } catch (e) { /* 隐私模式下忽略 */ }
+  }
   /* 涨跌幅上限：主板10% / 创业板+科创板20% / 北交所30% / ST 5% */
   function klLimitRate(code, name) {
     const c = String(code || ''), nm = String(name || '').toUpperCase();
@@ -89,6 +97,7 @@
     auction: null, auctionLoading: false, auctionError: null, auctionAt: 0,
     auctionOpts: { days: 10 }, auctionMethodOpen: false,
     ladderDate: null, ladderData: null, ladderDates: [], ladderLoading: false, ladderKind: 'zt',
+    showLadderMarks: ladderMarksLoad(),
     predict: null, predictLoading: false, predictOpts: { date: '' }, predictMethodOpen: false,
     news: null, newsLoading: false, newsError: null, newsAt: 0, newsSince: null,
     newsInterval: 30, newsWindow: 72, newsPaused: false, newsFilter: 'all',
@@ -476,12 +485,13 @@
       // 历史回放的标记由 /api/ladder 按「截至该日」的窗口重新计算，不使用今日回测结果
       const seed = x.seedMark || null;
       let cardCls = 'em-stock', corner = '', style = '';
-      if (edge) {
+      // 两类★晋级角标/彩色边框统一受「显示晋级标记」开关控制；title 文字信息无论开关都保留
+      if (S.showLadderMarks && edge) {
         cardCls += ' dg-edge edge-' + E(edge.key);
         corner = ' data-edge-corner="★ ' + E(edge.label) + ' ' + E(edge.rate) + '"';
         style = ' style="' + dgEdgeStyle(edge) + '"';
       }
-      if (seed && (seed.tier === 'seed' || seed.tier === 'watch')) {
+      if (S.showLadderMarks && seed && (seed.tier === 'seed' || seed.tier === 'watch')) {
         cardCls += ' fs-mark fs-' + E(seed.tier);
         corner = ' data-seed-corner="★ 晋级 ' + E(seed.prob) + '%"';
         style = ' style="--fs:' + E(seed.color) + ';--fs-bg:' + E(seed.bg) + '"';
@@ -509,31 +519,31 @@
         '</div><div class="em-stocks">' + list.map(stockCell).join('') + '</div></div>';
     }).join('');
 
-    /* ── 跌停天梯：跌停池无连板层级（boards 恒 1），改用「跌停封单强度」分层；
-          同时按东财行业归属统计跌停家数，标注跌停最集中的板块（题材映射无稳定来源，不臆造） ── */
+    /* ── 跌停天梯：按东财跌停池 days 字段（连续跌停天数）分层，连跌越多层级越高；
+          同时按东财行业归属统计跌停家数，标注跌停最集中的板块（题材映射无稳定来源，不臆造）。
+          组内按封单额/流通市值降序，封单强度仍作排序与卡片展示依据 ── */
     const dtAll = ladderIsHistory ? (S.ladderData.dt || []) : (d.limitDownPool || []);
     // 行业跌停家数统计，找出家数最多的板块（可能并列）
     const dtIndustry = new Map();
     dtAll.forEach(x => { const k = x.industry || '未分类'; dtIndustry.set(k, (dtIndustry.get(k) || 0) + 1); });
     const dtMaxCount = dtIndustry.size ? Math.max(...dtIndustry.values()) : 0;
     const dtTopIndustries = [...dtIndustry.entries()].filter(([, n]) => n === dtMaxCount).map(([k]) => k);
-    // 封单强度分层：封单额/流通市值%。阈值按跌停池实测分布设定，从高到低
-    const dtTiers = [
-      { key: 'dt-tier-3', name: '一字锁死', desc: '封单 ≥3%，几乎无撬板', test: v => v >= 3 },
-      { key: 'dt-tier-2', name: '强封跌停', desc: '封单 1%~3%，封板较牢', test: v => v >= 1 && v < 3 },
-      { key: 'dt-tier-1', name: '普通跌停', desc: '封单 0.3%~1%', test: v => v >= 0.3 && v < 1 },
-      { key: 'dt-tier-0', name: '弱封 / 易撬', desc: '封单 <0.3%，随时可能开板', test: v => v < 0.3 }
-    ];
-    const dtTierOf = x => {
-      const v = Number(x.sealFundRatio) || 0;
-      return dtTiers.find(t => t.test(v)) || dtTiers[dtTiers.length - 1];
-    };
+    // 连续跌停天数分层：days 越大层级越高；字段缺失按 1（首日跌停）兜底
+    const dtByDays = new Map();
+    dtAll.forEach(x => {
+      const dd = Math.max(1, Number(x.downDays) || 1);
+      if (!dtByDays.has(dd)) dtByDays.set(dd, []);
+      dtByDays.get(dd).push(x);
+    });
+    const dtMaxDays = dtByDays.size ? Math.max(...dtByDays.keys()) : 0;
+    const dtDayCls = dd => 'dt-day-' + Math.min(dd, 3);
     const dtCell = x => {
       const seal = Number(x.sealFundRatio) || 0;
       const ind = x.industry || '未分类';
+      const dd = Math.max(1, Number(x.downDays) || 1);
       const hot = dtMaxCount >= 2 && dtTopIndustries.indexOf(ind) >= 0;
-      const ttl = x.name + '(' + x.code + ') · ' + ind + '\n封单比 ' + N(seal) + '%（封单额 / 流通市值）' +
-        '\n最后封板 ' + (x.lastSeal || '—') + ' · 炸板 ' + (Number(x.brokenCount) || 0) + ' 次 · 换手 ' + N(x.turnover) + '%' +
+      const ttl = x.name + '(' + x.code + ') · ' + ind + '\n连续跌停 ' + dd + ' 天 · 封单比 ' + N(seal) + '%（封单额 / 流通市值）' +
+        '\n最后封板 ' + (x.lastSeal || '—') + ' · 撬板 ' + (Number(x.brokenCount) || 0) + ' 次 · 换手 ' + N(x.turnover) + '%' +
         (hot ? '\n⚠ 所属板块为当日跌停最集中板块（' + ind + ' ' + dtMaxCount + ' 家）' : '');
       return '<div class="em-stock dt-stock' + (hot ? ' dt-hot' : '') + '" title="' + E(ttl) + '">' +
         '<div class="em-stock-head"><b>' + sn(x.code, x.name) + '</b><span class="em-code">' + E(x.code) + '</span></div>' +
@@ -544,17 +554,17 @@
         '<div class="em-stock-meta"><span>末封 ' + E(x.lastSeal || '—') + '</span>' +
         '<span>换手 ' + N(x.turnover) + '%</span></div></div>';
     };
-    const dtTiersHtml = dtTiers.map(t => {
-      const list = dtAll.filter(x => dtTierOf(x).key === t.key).slice()
+    const dtTiersHtml = [...dtByDays.keys()].sort((a, b) => b - a).map(dd => {
+      const list = dtByDays.get(dd).slice()
         .sort((a, c) => (Number(c.sealFundRatio) || 0) - (Number(a.sealFundRatio) || 0));
-      if (!list.length) return '';
-      return '<div class="em-tier dt-tier ' + t.key + '"><div class="em-tier-head">' +
-        '<span class="em-tier-badge">' + t.name + '</span><span class="em-tier-count">' + list.length + ' 家</span>' +
-        '<span class="dt-tier-desc">' + t.desc + '</span>' +
+      return '<div class="em-tier dt-tier ' + dtDayCls(dd) + '"><div class="em-tier-head">' +
+        '<span class="em-tier-badge">' + dd + '连跌</span><span class="em-tier-count">' + list.length + ' 家</span>' +
+        (dd === dtMaxDays && dd >= 2 ? '<span class="dt-tier-mark">连续跌停最深</span>' : '') +
         '</div><div class="em-stocks">' + list.map(dtCell).join('') + '</div></div>';
     }).join('');
     const dtSummary = dtAll.length
       ? '<div class="dt-summary">' + tag('跌停 ' + dtAll.length + ' 家', 'green') +
+        (dtMaxDays >= 2 ? tag('最长 ' + dtMaxDays + ' 连跌', 'warn') : '') +
         (dtTopIndustries.length
           ? tag('最多跌停板块：' + dtTopIndustries.join(' / ') + ' ' + dtMaxCount + ' 家', 'warn')
           : '') +
@@ -595,7 +605,9 @@
     // 资金方向 + 行业板块 / 概念板块分析（数据：新浪资金流 + 新浪板块行情）
     const ff = d.fundFlow || {}, ffBoards = ff.boards || [];
     const amtYi = v => (Number(v) / 1e8).toFixed(2);
-    const fundTop = ffBoards.slice(0, 8), fundBottom = ffBoards.slice(-6).reverse();
+    // 上游（腾讯源按涨跌幅）返回顺序不保证按净流入，这里显式按 net 降序，避免「净流入 Top」错显示净流出。
+    const ffSorted = ffBoards.slice().sort((a, b) => (Number(b.net) || 0) - (Number(a.net) || 0));
+    const fundTop = ffSorted.slice(0, 8), fundBottom = ffSorted.slice(-6).reverse();
     const fundRow = x => '<div class="ff-row"><span class="ff-name">' + E(x.name) + '</span>' +
       '<span class="ff-pct ' + (x.pct > 0 ? 'up' : x.pct < 0 ? 'down' : '') + '">' + (x.pct > 0 ? '+' : '') + N(x.pct) + '%</span>' +
       '<span class="ff-net ' + (x.net > 0 ? 'up' : 'down') + '">' + (x.net > 0 ? '+' : '') + amtYi(x.net) + ' 亿</span></div>';
@@ -653,7 +665,7 @@
       '<div class="grid2"><div class="card pad"><div class="fact-list">' + facts + '</div></div>' +
       '<div class="card pad"><div class="em-ladder-head">' +
       '<h4 style="font-size:12.5px;margin-bottom:6px">天梯 <span class="small muted" style="font-weight:400">' +
-      (S.ladderKind === 'dt' ? '（跌停封单强度分层 · 标注最多跌停板块）' : '（东方财富式 · 按板级分层）') + '</span></h4>' +
+      (S.ladderKind === 'dt' ? '（按连续跌停天数分层 · 标注最多跌停板块）' : '（东方财富式 · 按板级分层）') + '</span></h4>' +
       '<div class="ld-ctrl">' +
       '<div class="ld-tabs"><button type="button" class="ld-tab' + (S.ladderKind === 'zt' ? ' active' : '') + '" data-kind="zt">连板天梯</button>' +
       '<button type="button" class="ld-tab' + (S.ladderKind === 'dt' ? ' active' : '') + '" data-kind="dt">跌停天梯</button></div>' +
@@ -662,17 +674,20 @@
         ? S.ladderDates.map(x => '<option value="' + E(x.date) + '"' + (x.date === (S.ladderDate || (m.poolDate || '')) ? ' selected' : '') + '>' +
           E(String(x.date).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3')) + '（' + x.count + ' 涨停 / ' + (x.dtCount || 0) + ' 跌停）</option>').join('')
         : '<option value="' + E(m.poolDate || '') + '">' + E(m.poolDate || '当日') + '</option>') +
-      '</select></div></div>' +
+      '</select>' +
+      '<label class="check ld-marks" title="控制天梯卡片上的 ★ 晋级概率角标与历史优势组合彩色边框（设置会记住）">' +
+      '<input type="checkbox" id="showLadderMarks"' + (S.showLadderMarks ? ' checked' : '') + '> 晋级标记</label>' +
+      '</div></div>' +
       (ladderIsHistory && S.ladderDate !== m.poolDate ? '<div class="note-box" style="margin:0 0 8px">历史回放：' +
         E(String(S.ladderDate).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3')) + ' 的' + (S.ladderKind === 'dt' ? '跌停' : '涨停') + '池（来源：' + E(S.ladderData.source || '东方财富') +
-        '），分层与板块标注按当日结构判定；彩色边框与 ★ 角标由该日及之前的数据单独计算，不使用今日回测结果。<b>这是已发生的历史行情，不是今日机会。</b></div>' : '') +
+        '），分层与板块标注按当日结构判定；' + (S.showLadderMarks ? '彩色边框与 ★ 角标由该日及之前的数据单独计算，不使用今日回测结果。' : '') + '<b>这是已发生的历史行情，不是今日机会。</b></div>' : '') +
       (S.ladderKind === 'dt'
         ? dtSummary +
           '<div class="em-ladder">' + (S.ladderLoading ? '<div class="empty">载入历史天梯…</div>' : (dtTiersHtml || '<div class="empty">当日无跌停标的</div>')) + '</div>' +
-          '<div class="note-box">跌停池个股 <b>无连板层级</b>（跌停不存在连板概念），故按<b>封单强度</b>（封单额 / 流通市值）由高到低分层：一字锁死 ≥3%、强封 1%~3%、普通 0.3%~1%、弱封 &lt;0.3%（越靠下越易撬板）。<b class="warn">最多跌停板块</b>按东方财富行业归属统计家数，家数 ≥2 且并列居首时标注；跌停个股无稳定的概念题材映射，故不臆测题材。数据：东方财富跌停池，交易日 ' + E(m.poolDate || '—') + '。</div>'
+          '<div class="note-box">跌停天梯按<b>连续跌停天数</b>分层（东方财富跌停池 days 字段）：N 连跌 &gt; … &gt; 2 连跌 &gt; 首日跌停，越靠上连续跌停越久、负反馈越极端；同层内按<b>封单强度</b>（封单额 / 流通市值）由高到低排列，封单越大越难撬板。<b class="dt-tier-mark-inline">连续跌停最深</b>标出当日连跌天数最多的层级。<b class="warn">最多跌停板块</b>按东方财富行业归属统计家数，家数 ≥2 且并列居首时标注；跌停个股无稳定的概念题材映射，故不臆测题材。数据：东方财富跌停池，交易日 ' + E(m.poolDate || '—') + '。</div>'
         : '<div class="em-ladder">' + (S.ladderLoading ? '<div class="empty">载入历史天梯…</div>' : (tiersHtml || '<div class="empty">当日无连板梯队数据</div>')) + '</div>' +
-          dgEdgeLegendCard(true) +
-          seedLegendCard(ladderIsHistory ? (S.ladderData.firstBoardSeed || null) : d.firstBoardSeed, ladderIsHistory) +
+          (S.showLadderMarks ? dgEdgeLegendCard(true) : '') +
+          (S.showLadderMarks ? seedLegendCard(ladderIsHistory ? (S.ladderData.firstBoardSeed || null) : d.firstBoardSeed, ladderIsHistory) : '') +
           '<div class="note-box">空间板：' + space + '<br>梯队判读：' + E(ov.gap ? '存在断层，按 leader-game 框架属退潮前置信号，需次日 2/3 板补齐确认。' : '梯队连续无断层，情绪延续性优于断层结构。') +
           '<br>板块地位标注规则（按东财行业分组机械判定，非投资建议）：<b class="up">板块龙头</b>=同行业连板最高且封单最强；<b style="color:var(--warn)">反包核心 / 题材龙 / 封单核心</b>=累计板最高 / 连板最高 / 封单最强但不同时满足龙头条件；板块跟风=连板低于行业最高；独苗=行业仅 1 只涨停。<br>每层按封单比降序、首封时间升序排列；封单比 ≥1% 标红、0.3%~1% 标橙、&lt;0.3% 标灰，炸板次数越多风险越高。数据：东方财富涨停池 + 腾讯证券实时快照。' +
           '</div>') +
@@ -702,6 +717,12 @@
     safeChart('chartLadder', ladderOpt, ladderItems);
     const lsel = $('ladderDate');
     if (lsel) lsel.onchange = e => loadLadderDate(e.target.value);
+    const marksChk = $('showLadderMarks');
+    if (marksChk) marksChk.onchange = e => {
+      S.showLadderMarks = e.target.checked;
+      ladderMarksSave();
+      renderReview(S.data);
+    };
     $('pane-review').querySelectorAll('.ld-tab').forEach(btn => {
       btn.onclick = () => { S.ladderKind = btn.dataset.kind; renderReview(S.data); };
     });
