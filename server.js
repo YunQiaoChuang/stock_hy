@@ -163,13 +163,14 @@ async function buildDashboard(query) {
   delete f._;
 
   // 1) 四路数据并行
-  const [universe, pools, indices, boards, prevHistory, fundFlow] = await Promise.all([
+  const [universe, pools, indices, boards, prevHistory, fundFlow, globalMarkets] = await Promise.all([
     ds.getUniverse().catch(() => ({ list: [], count: 0, asOf: new Date().toISOString() })),
     ds.getPools().catch(() => ({ zt: [], qs: [], zb: [], dt: [], date: '', asOf: new Date().toISOString() })),
     ds.getIndices().catch(() => []),
     ds.getSectorBoards().catch(() => ({ industry: [], concept: [], asOf: new Date().toISOString() })),
     ds.getPoolFullHistory(15).catch(() => ({ dates: [], byDate: {}, note: '' })),
-    ds.getFundFlow().catch(() => ({ boards: [], totalNet: null, reason: '资金流暂不可用' }))
+    ds.getFundFlow().catch(() => ({ boards: [], totalNet: null, reason: '资金流暂不可用' })),
+    ds.getGlobalMarkets().catch(() => ({ rows: [], source: null, note: '全球行情暂不可用' }))
   ]);
 
   // 2) 板块筛选解析（新浪板块成分股）
@@ -250,11 +251,11 @@ async function buildDashboard(query) {
     port: ACTIVE_PORT,
     aiConfigured: aiStatus().configured,
     aiModel: aiStatus().model,
-    dataSourceNote: '全市场广度=新浪财经行情中心；实时快照/指数=腾讯证券行情；日K(前复权)=腾讯证券；涨停/炸板/强势/跌停池与连板数、封单、行业=东方财富涨停池。均为免费公开接口，非交易所官方推送，盘中可能有秒级延迟。',
+    dataSourceNote: '全市场广度=新浪财经行情中心；实时快照/指数=腾讯证券行情；全球行情(港股/美股/国际商品)=腾讯证券行情；日K(前复权)=腾讯证券；涨停/炸板/强势/跌停池与连板数、封单、行业=东方财富涨停池。均为免费公开接口，非交易所官方推送，盘中可能有秒级延迟。',
     disclaimer: DISCLAIMER
   };
 
-  return { meta, overview: ov, review, themes, picks, lowbuy, opportunities: opps, limitDownPool: pools.dt || [], boards, fundFlow, relay, ai, prevLadder, firstBoardSeed: seed };
+  return { meta, overview: ov, review, themes, picks, lowbuy, opportunities: opps, limitDownPool: pools.dt || [], boards, fundFlow, globalMarkets, relay, ai, prevLadder, firstBoardSeed: seed };
 }
 
 /* ─────────── 涨停回调到支撑位（独立模块，避免拖慢主看板） ─────────── */
@@ -456,7 +457,12 @@ async function getStockChart(query) {
       price: Number.isFinite(price) ? price : null, pct: q.pct ?? null,
       floatCap: q.floatCap ?? null, turnover: q.turnover ?? null,
       high: q.high ?? null, low: q.low ?? null, open: q.open ?? null,
-      prevClose: q.prevClose ?? null, asOf: q.ticktime || null
+      prevClose: q.prevClose ?? null, asOf: q.ticktime || null,
+      // 分时右侧信息栏所需的其余真实快照字段（来自同一份腾讯行情，不臆造）
+      change: q.change ?? null, volume: q.volume ?? null, amountWan: q.amountWan ?? null,
+      avgPrice: q.avgPrice ?? null, volRatio: q.volRatio ?? null, amplitude: q.amplitude ?? null,
+      limitUp: q.limitUp ?? null, limitDown: q.limitDown ?? null, ticktime: q.ticktime ?? null,
+      totalCap: q.totalCap ?? null, pe: q.pe ?? null, pb: q.pb ?? null
     },
     day: { rows: day.rows, source: day.source, adjusted: day.adjusted, asOf: day.asOf },
     week: { rows: week.rows, source: week.source, adjusted: week.adjusted, asOf: week.asOf, reason: week.reason || null },
