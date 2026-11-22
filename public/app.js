@@ -404,9 +404,9 @@
       return '<div class="kpi"><span class="lbl">' + E(i.name) + '</span><div class="big ' + c + ' num">' + N(i.price) + '</div><div class="sub ' + c + '">' + (i.pct > 0 ? '+' : '') + N(i.pct) + '%</div></div>';
     });
     const extra = [
-      { lbl: '涨停 / 跌停', big: ov.limitUp + ' / ' + ov.limitDown, sub: '炸板 ' + ov.broken + ' 家 · 率 ' + N(ov.breakRate, 1) + '%', cls: 'up' },
+      { lbl: '涨停 / 跌停', big: '<span class="up">' + ov.limitUp + '</span> / <span class="down">' + ov.limitDown + '</span>', sub: '炸板 ' + ov.broken + ' 家 · 率 ' + N(ov.breakRate, 1) + '%', cls: '' },
       { lbl: '最高连板', big: ov.maxBoard + ' 板', sub: ov.gap ? '梯队有断层' : '梯队无断层', cls: 'up' },
-      { lbl: '涨跌家数', big: ov.up + ' / ' + ov.down, sub: '广度 ' + N(ov.breadth, 1) + '%', cls: ov.up >= ov.down ? 'up' : 'down' },
+      { lbl: '涨跌家数', big: '<span class="up">' + ov.up + '</span> / <span class="down">' + ov.down + '</span>', sub: '广度 ' + N(ov.breadth, 1) + '%', cls: '' },
       { lbl: '市场档位', big: ov.tier, sub: '情绪：' + ov.emotion, cls: ov.tier === '进攻' ? 'up' : (ov.tier === '防守' ? 'down' : '') }
     ];
     extra.forEach(x => cells.push('<div class="kpi"><span class="lbl">' + x.lbl + '</span><div class="big ' + x.cls + '">' + x.big + '</div><div class="sub">' + E(x.sub) + '</div></div>'));
@@ -3247,8 +3247,8 @@
       '<span class="small muted">回测按 10 分钟缓存；切换天数或点击按钮会强制重算</span></div></div>';
 
     const kpis = [
-      ['涨停 / 跌停', E(mk.limitUp) + ' / ' + E(mk.limitDown), '炸板 ' + E(mk.broken) + ' 家 · 率 ' + N(mk.breakRate, 1) + '%'],
-      ['涨跌家数', E(mk.up) + ' / ' + E(mk.down), '广度 ' + N(mk.breadth, 1) + '%'],
+      ['涨停 / 跌停', '<span class="up">' + E(mk.limitUp) + '</span> / <span class="down">' + E(mk.limitDown) + '</span>', '炸板 ' + E(mk.broken) + ' 家 · 率 ' + N(mk.breakRate, 1) + '%'],
+      ['涨跌家数', '<span class="up">' + E(mk.up) + '</span> / <span class="down">' + E(mk.down) + '</span>', '广度 ' + N(mk.breadth, 1) + '%'],
       ['最高连板', E(mk.maxBoard) + ' 板', '市场档位 ' + E(mk.tier) + ' / 情绪 ' + E(mk.emotion)],
       ['指数均值', (Number(mk.idxAvg) > 0 ? '+' : '') + N(mk.idxAvg) + '%', '6 大指数当日均值']
     ];
