@@ -111,7 +111,7 @@
     newsKeyword: '', newsMethodOpen: false, newsShowAll: false,
     newsTimer: null, newsTickTimer: null, newsNextAt: 0, newsCodes: '',
     en: null, enLoading: false, enError: null, enOpts: { days: 8 },
-    chart: { open: false, code: null, name: null, period: 'day', data: null, loading: false, error: null, view: null, geom: null, lockIdx: null },
+    chart: { open: false, code: null, name: null, period: 'minute', data: null, loading: false, error: null, view: null, geom: null, lockIdx: null },
     klColors: klLoadColors(), klPanelOpen: false
   };
   // 消息面三个源只在「明日龙头」模块启用后才调用，未调用前不计入主看板在线率分母
@@ -184,7 +184,7 @@
     if (/^\d{6}$/.test(initStock || '')) {
       openStockChart(initStock);
       const initPeriod = qs.get('period');
-      if (initPeriod === 'week' || initPeriod === 'minute') S.chart.period = initPeriod;
+      if (initPeriod === 'day' || initPeriod === 'week' || initPeriod === 'minute') S.chart.period = initPeriod;
       const z = Number(qs.get('zoom'));
       if (z >= 6 && z <= 1000) S.chart._initZoom = Math.round(z);
       const d = qs.get('day');
@@ -3414,13 +3414,13 @@
     const c = String(code || '').replace(/\D/g, '').slice(0, 6);
     if (!/^\d{6}$/.test(c)) return;
     stopMinuteTimer();
-    S.chart = { open: true, code: c, name: c, period: 'day', data: null, loading: true, error: null, view: null, geom: null, lockIdx: null };
+    S.chart = { open: true, code: c, name: c, period: 'minute', data: null, loading: true, error: null, view: null, geom: null, lockIdx: null };
     $('stockModal').style.display = 'flex';
     $('smName').textContent = c;
     $('smCode').textContent = '';
     $('smQuote').innerHTML = '';
     $('smSource').textContent = '载入中…';
-    $('smBody').innerHTML = '<div class="empty">正在拉取 ' + E(c) + ' 的日K / 周K / 筹码分布…</div>';
+    $('smBody').innerHTML = '<div class="empty">正在拉取 ' + E(c) + ' 的分时 / 日K / 周K / 筹码分布…</div>';
     $('smFoot').innerHTML = '';
     document.body.style.overflow = 'hidden';
     fetch('/api/stock/chart?code=' + encodeURIComponent(c))
