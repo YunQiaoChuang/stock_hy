@@ -39,13 +39,20 @@
   function klSaveColors() {
     try { localStorage.setItem(KL_COLOR_KEY, JSON.stringify(S.klColors)); } catch (e) { /* 隐私模式下忽略 */ }
   }
-  /* ── 连板天梯「晋级标记」显示开关：★晋级概率角标 + 历史优势组合彩色边框，存 localStorage ── */
-  const LADDER_MARKS_KEY = 'stockhy_ladder_marks_v1';
+  /* ── 连板天梯「晋级标记」显示开关（细粒度）：首板种子★晋级角标、历史优势组合彩色边框各自独立，存 localStorage ── */
+  const LADDER_MARKS_KEY = 'stockhy_ladder_marks_v2';
+  const LADDER_MARKS_DEFAULT = { seed: true, edge: true };
   function ladderMarksLoad() {
-    try { return localStorage.getItem(LADDER_MARKS_KEY) !== '0'; } catch (e) { return true; }
+    try {
+      const o = JSON.parse(localStorage.getItem(LADDER_MARKS_KEY) || 'null');
+      if (o && typeof o === 'object') return { seed: o.seed !== false, edge: o.edge !== false };
+      // 兼容旧版单一开关：v1 存 '0' 表示两类全关
+      if (localStorage.getItem('stockhy_ladder_marks_v1') === '0') return { seed: false, edge: false };
+    } catch (e) { /* 隐私模式下忽略 */ }
+    return Object.assign({}, LADDER_MARKS_DEFAULT);
   }
   function ladderMarksSave() {
-    try { localStorage.setItem(LADDER_MARKS_KEY, S.showLadderMarks ? '1' : '0'); } catch (e) { /* 隐私模式下忽略 */ }
+    try { localStorage.setItem(LADDER_MARKS_KEY, JSON.stringify(S.ladderMarks)); } catch (e) { /* 隐私模式下忽略 */ }
   }
   /* 涨跌幅上限：主板10% / 创业板+科创板20% / 北交所30% / ST 5% */
   function klLimitRate(code, name) {
@@ -97,7 +104,7 @@
     auction: null, auctionLoading: false, auctionError: null, auctionAt: 0,
     auctionOpts: { days: 10 }, auctionMethodOpen: false,
     ladderDate: null, ladderData: null, ladderDates: [], ladderLoading: false, ladderKind: 'zt',
-    showLadderMarks: ladderMarksLoad(),
+    ladderMarks: ladderMarksLoad(),
     predict: null, predictLoading: false, predictOpts: { date: '' }, predictMethodOpen: false,
     news: null, newsLoading: false, newsError: null, newsAt: 0, newsSince: null,
     newsInterval: 30, newsWindow: 72, newsPaused: false, newsFilter: 'all',
@@ -486,12 +493,12 @@
       const seed = x.seedMark || null;
       let cardCls = 'em-stock', corner = '', style = '';
       // 两类★晋级角标/彩色边框统一受「显示晋级标记」开关控制；title 文字信息无论开关都保留
-      if (S.showLadderMarks && edge) {
+      if (S.ladderMarks.edge && edge) {
         cardCls += ' dg-edge edge-' + E(edge.key);
         corner = ' data-edge-corner="★ ' + E(edge.label) + ' ' + E(edge.rate) + '"';
         style = ' style="' + dgEdgeStyle(edge) + '"';
       }
-      if (S.showLadderMarks && seed && (seed.tier === 'seed' || seed.tier === 'watch')) {
+      if (S.ladderMarks.seed && seed && (seed.tier === 'seed' || seed.tier === 'watch')) {
         cardCls += ' fs-mark fs-' + E(seed.tier);
         corner = ' data-seed-corner="★ 晋级 ' + E(seed.prob) + '%"';
         style = ' style="--fs:' + E(seed.color) + ';--fs-bg:' + E(seed.bg) + '"';
@@ -675,19 +682,21 @@
           E(String(x.date).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3')) + '（' + x.count + ' 涨停 / ' + (x.dtCount || 0) + ' 跌停）</option>').join('')
         : '<option value="' + E(m.poolDate || '') + '">' + E(m.poolDate || '当日') + '</option>') +
       '</select>' +
-      '<label class="check ld-marks" title="控制天梯卡片上的 ★ 晋级概率角标与历史优势组合彩色边框（设置会记住）">' +
-      '<input type="checkbox" id="showLadderMarks"' + (S.showLadderMarks ? ' checked' : '') + '> 晋级标记</label>' +
+      '<label class="check ld-marks" title="控制首板种子卡片的 ★晋级概率角标与彩色边框（设置会记住）">' +
+      '<input type="checkbox" id="showSeedMarks"' + (S.ladderMarks.seed ? ' checked' : '') + '> 种子晋级标记</label>' +
+      '<label class="check ld-marks" title="控制历史优势组合的彩色边框与晋级率角标（设置会记住）">' +
+      '<input type="checkbox" id="showEdgeMarks"' + (S.ladderMarks.edge ? ' checked' : '') + '> 优势组合标记</label>' +
       '</div></div>' +
       (ladderIsHistory && S.ladderDate !== m.poolDate ? '<div class="note-box" style="margin:0 0 8px">历史回放：' +
         E(String(S.ladderDate).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3')) + ' 的' + (S.ladderKind === 'dt' ? '跌停' : '涨停') + '池（来源：' + E(S.ladderData.source || '东方财富') +
-        '），分层与板块标注按当日结构判定；' + (S.showLadderMarks ? '彩色边框与 ★ 角标由该日及之前的数据单独计算，不使用今日回测结果。' : '') + '<b>这是已发生的历史行情，不是今日机会。</b></div>' : '') +
+        '），分层与板块标注按当日结构判定；' + ((S.ladderMarks.seed || S.ladderMarks.edge) ? '彩色边框与 ★ 角标由该日及之前的数据单独计算，不使用今日回测结果。' : '') + '<b>这是已发生的历史行情，不是今日机会。</b></div>' : '') +
       (S.ladderKind === 'dt'
         ? dtSummary +
           '<div class="em-ladder">' + (S.ladderLoading ? '<div class="empty">载入历史天梯…</div>' : (dtTiersHtml || '<div class="empty">当日无跌停标的</div>')) + '</div>' +
           '<div class="note-box">跌停天梯按<b>连续跌停天数</b>分层（东方财富跌停池 days 字段）：N 连跌 &gt; … &gt; 2 连跌 &gt; 首日跌停，越靠上连续跌停越久、负反馈越极端；同层内按<b>封单强度</b>（封单额 / 流通市值）由高到低排列，封单越大越难撬板。<b class="dt-tier-mark-inline">连续跌停最深</b>标出当日连跌天数最多的层级。<b class="warn">最多跌停板块</b>按东方财富行业归属统计家数，家数 ≥2 且并列居首时标注；跌停个股无稳定的概念题材映射，故不臆测题材。数据：东方财富跌停池，交易日 ' + E(m.poolDate || '—') + '。</div>'
         : '<div class="em-ladder">' + (S.ladderLoading ? '<div class="empty">载入历史天梯…</div>' : (tiersHtml || '<div class="empty">当日无连板梯队数据</div>')) + '</div>' +
-          (S.showLadderMarks ? dgEdgeLegendCard(true) : '') +
-          (S.showLadderMarks ? seedLegendCard(ladderIsHistory ? (S.ladderData.firstBoardSeed || null) : d.firstBoardSeed, ladderIsHistory) : '') +
+          (S.ladderMarks.edge ? dgEdgeLegendCard(true) : '') +
+          (S.ladderMarks.seed ? seedLegendCard(ladderIsHistory ? (S.ladderData.firstBoardSeed || null) : d.firstBoardSeed, ladderIsHistory) : '') +
           '<div class="note-box">空间板：' + space + '<br>梯队判读：' + E(ov.gap ? '存在断层，按 leader-game 框架属退潮前置信号，需次日 2/3 板补齐确认。' : '梯队连续无断层，情绪延续性优于断层结构。') +
           '<br>板块地位标注规则（按东财行业分组机械判定，非投资建议）：<b class="up">板块龙头</b>=同行业连板最高且封单最强；<b style="color:var(--warn)">反包核心 / 题材龙 / 封单核心</b>=累计板最高 / 连板最高 / 封单最强但不同时满足龙头条件；板块跟风=连板低于行业最高；独苗=行业仅 1 只涨停。<br>每层按封单比降序、首封时间升序排列；封单比 ≥1% 标红、0.3%~1% 标橙、&lt;0.3% 标灰，炸板次数越多风险越高。数据：东方财富涨停池 + 腾讯证券实时快照。' +
           '</div>') +
@@ -717,9 +726,14 @@
     safeChart('chartLadder', ladderOpt, ladderItems);
     const lsel = $('ladderDate');
     if (lsel) lsel.onchange = e => loadLadderDate(e.target.value);
-    const marksChk = $('showLadderMarks');
-    if (marksChk) marksChk.onchange = e => {
-      S.showLadderMarks = e.target.checked;
+    const seedChk = $('showSeedMarks'), edgeChk = $('showEdgeMarks');
+    if (seedChk) seedChk.onchange = e => {
+      S.ladderMarks.seed = e.target.checked;
+      ladderMarksSave();
+      renderReview(S.data);
+    };
+    if (edgeChk) edgeChk.onchange = e => {
+      S.ladderMarks.edge = e.target.checked;
       ladderMarksSave();
       renderReview(S.data);
     };
