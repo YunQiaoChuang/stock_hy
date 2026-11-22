@@ -427,15 +427,32 @@ async function getStockChart(query) {
   if (!/^\d{6}$/.test(code)) return { error: '缺少有效的 6 位股票代码', code: code || null };
   const t0 = Date.now();
   const dayLimit = 160, weekLimit = 80;
-  const [day, week, quotes, minute, fundHistory, fundNow, pools] = await Promise.all([
+  const [day, week, quotes, minute, multiDay, fundHistory, fundNow, pools] = await Promise.all([
     ds.getKlineData(code, dayLimit).catch(() => ({ rows: [], source: null, adjusted: null })),
     ds.getPeriodKline(code, 'week', weekLimit).catch(() => ({ rows: [], source: null, adjusted: false })),
     ds.getQQQuotes([code]).catch(() => ({})),
     ds.getMinute(code).catch(() => ({ rows: [], source: null, reason: '分时接口暂不可用' })),
+    ds.getMinuteMultiDay(code).catch(() => ({ days: [], source: null, reason: '五日分时接口暂不可用' })),
     ds.getFundHistory(code, 160).catch(() => ({ rows: [], source: null, reason: '资金流历史暂不可用' })),
     ds.getStockFundNow(code).catch(() => ({ source: null, reason: '资金快照暂不可用' })),
     ds.getPools().catch(() => ({}))
   ]);
+  // 五日分时每天以各自昨收为基准画涨跌幅：用日K收盘按日期补 prevClose（早→晚，第 i 天昨收=第 i-1 日收盘）。
+  // 日K缺某日时回溯该日前一根，仍缺则 prevClose=null，前端按当日首分钟价兜底并如实标注。
+  const dayCloseByDate = new Map();
+  (day.rows || []).forEach(r => { const d = String(r.date || '').replace(/\D/g, '').slice(0, 8); if (/^\d{8}$/.test(d) && Number.isFinite(r.close)) dayCloseByDate.set(d, r.close); });
+  const dayDates = [...dayCloseByDate.keys()].sort();
+  const multiDays = (multiDay.days || []).map(x => {
+    let prevClose = null;
+    const idx = dayDates.indexOf(x.date);
+    if (idx > 0) prevClose = dayCloseByDate.get(dayDates[idx - 1]);
+    else if (idx === 0 && (multiDay.days || []).length) {
+      // 该日恰为日K首日：用五日窗口内更早一天的收盘兜底
+      const earliest = (multiDay.days || []).find(d => d.date < x.date);
+      if (earliest && earliest.rows.length) prevClose = earliest.rows[earliest.rows.length - 1].price;
+    }
+    return { date: x.date, prevClose, rows: x.rows };
+  });
   const fundWeek = ds.weeklyFund(fundHistory.rows || []).slice(-weekLimit);
   const q = quotes[code] || {};
   const price = Number(q.price) > 0 ? Number(q.price) : (day.rows.length ? day.rows[day.rows.length - 1].close : null);
@@ -467,6 +484,10 @@ async function getStockChart(query) {
     day: { rows: day.rows, source: day.source, adjusted: day.adjusted, asOf: day.asOf },
     week: { rows: week.rows, source: week.source, adjusted: week.adjusted, asOf: week.asOf, reason: week.reason || null },
     minute: { rows: minute.rows || [], source: minute.source || null, date: minute.date || null, asOf: minute.asOf || null, reason: minute.reason || null },
+    multiDay: {
+      days: multiDays, source: multiDay.source || null, granularity: multiDay.granularity || null,
+      intervalLabel: multiDay.intervalLabel || null, asOf: multiDay.asOf || null, reason: multiDay.reason || null
+    },
     seal: stockSeal(pools, code),
     fund: {
       day: { rows: fundHistory.rows || [], source: fundHistory.source || null, reason: fundHistory.reason || null, name: fundHistory.name || null },

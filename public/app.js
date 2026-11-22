@@ -184,7 +184,7 @@
     if (/^\d{6}$/.test(initStock || '')) {
       openStockChart(initStock);
       const initPeriod = qs.get('period');
-      if (initPeriod === 'day' || initPeriod === 'week' || initPeriod === 'minute') S.chart.period = initPeriod;
+      if (initPeriod === 'day' || initPeriod === 'week' || initPeriod === 'minute' || initPeriod === 'multiDay') S.chart.period = initPeriod;
       const z = Number(qs.get('zoom'));
       if (z >= 6 && z <= 1000) S.chart._initZoom = Math.round(z);
       const d = qs.get('day');
@@ -3679,6 +3679,154 @@
     return a.join('');
   }
 
+  /** 分时 / 五日共用：右侧现价快照 + 涨停/炸板封单卡片，均为真实接口数据 */
+  function smQuoteSealSide(q, seal) {
+    const money = v => (v === null || v === undefined || !Number.isFinite(Number(v))) ? '—'
+      : Math.abs(v) >= 1e8 ? (v / 1e8).toFixed(2) + '亿'
+      : Math.abs(v) >= 1e4 ? (v / 1e4).toFixed(0) + '万' : Math.round(v) + '元';
+    const sideRow = (k, v, cls) => '<div class="sm-side-row"><span>' + k + '</span><b class="' + (cls || '') + '">' + v + '</b></div>';
+    const qcls2 = q.pct > 0 ? 'up' : q.pct < 0 ? 'down' : '';
+    const num = v => (v === null || v === undefined || !Number.isFinite(Number(v))) ? null : Number(v);
+    const signPct = v => { const x = num(v); return x === null ? '—' : (x > 0 ? '+' : '') + N(x) + '%'; };
+    const fmtVol = v => { const x = num(v); return x === null ? '—' : (x >= 10000 ? (x / 10000).toFixed(2) + '万手' : x.toFixed(0) + '手'); };
+    const fmtAmt = v => { const x = num(v); return x === null ? '—' : (x >= 10000 ? (x / 10000).toFixed(2) + '亿' : x.toFixed(0) + '万'); };
+    const devCls = v => { const x = num(v), base = num(q.prevClose); return (x !== null && base !== null && base > 0) ? (x > base ? 'up' : x < base ? 'down' : '') : ''; };
+    const quoteRows = [
+      ['现价', N(q.price), qcls2],
+      ['涨跌', num(q.change) === null ? '—' : (num(q.change) > 0 ? '+' : '') + N(q.change), qcls2],
+      ['涨幅', signPct(q.pct), qcls2],
+      ['今开', N(q.open), devCls(q.open)],
+      ['昨收', N(q.prevClose), ''],
+      ['最高', N(q.high), devCls(q.high)],
+      ['最低', N(q.low), devCls(q.low)],
+      ['均价', N(q.avgPrice), ''],
+      ['成交量', fmtVol(q.volume), ''],
+      ['成交额', fmtAmt(q.amountWan), ''],
+      ['换手', num(q.turnover) === null ? '—' : N(q.turnover) + '%', ''],
+      ['量比', N(q.volRatio), ''],
+      ['振幅', num(q.amplitude) === null ? '—' : N(q.amplitude) + '%', ''],
+      ['涨停价', N(q.limitUp), 'up'],
+      ['跌停价', N(q.limitDown), 'down']
+    ].map(r => sideRow(r[0], r[1], r[2])).join('');
+    const sealHtml = seal
+      ? '<div class="sm-side-seal' + (seal.kind === 'zb' ? ' is-broken' : '') + '">' +
+          '<div class="sm-side-seal-h"><b>' + (seal.kind === 'zb' ? '炸板池封单快照' : '涨停封单') + '</b>' +
+          (Number(seal.boards) > 1 ? '<span>' + seal.boards + ' 连板</span>' : '') + '</div>' +
+          sideRow('封单额', money(seal.sealFund), 'seal-amt') +
+          (Number.isFinite(seal.sealFundRatio) && seal.sealFundRatio !== null ? sideRow('占流通', N(seal.sealFundRatio) + '%', '') : '') +
+          sideRow('首封时间', E(seal.firstSeal || '—'), '') +
+          sideRow('炸板次数', (Number(seal.brokenCount) || 0) + ' 次', Number(seal.brokenCount) > 0 ? 'down' : '') +
+          '<div class="sm-side-seal-foot">' + E(String(seal.date || '')) + ' · ' + E(seal.source || '') + '</div>' +
+        '</div>'
+      : '<div class="sm-side-seal is-none"><div class="sm-side-seal-h"><b>涨停封单</b></div>' +
+        '<div class="sm-side-seal-none">该股当日未进入涨停 / 炸板池，无封单快照</div></div>';
+    return '<div class="sm-minute-side">' +
+      '<div class="sm-side-quote"><div class="sm-side-h">分时快照 <span class="small muted">' + E(q.ticktime || '') + '</span></div>' + quoteRows + '</div>' +
+      sealHtml + '</div>';
+  }
+
+  /** 五日分时图（参考东方财富「分时·五日」）：5 个交易日连续横轴，每天以各自昨收为基准算涨跌幅，段间不连线；红涨绿跌 + 成交量 */
+  function smFiveDaySvg(multi, quote) {
+    const days = (multi && multi.days) || [];
+    const valid = days.filter(d => d.rows && d.rows.length >= 2);
+    if (valid.length < 2) return '<div class="empty">五日分时数据不足（需 ≥2 个交易日），无法绘制</div>';
+    const W = 1110, H = 520, L = 62, R = 68, PT = 22, PB = 388, VT = 406, VB = 498;
+    const PW = W - L - R;
+    const SESS = 240; // 每个交易日 240 分钟槽
+    const toMin = t => {
+      const m = /^(\d{1,2}):(\d{2})$/.exec(String(t || '').trim());
+      if (!m) return null;
+      const v = (+m[1]) * 60 + (+m[2]);
+      if (v >= 570 && v <= 690) return v - 570;            // 09:30–11:30
+      if (v >= 780 && v <= 900) return 120 + (v - 780);     // 13:00–15:00
+      if (v >= 905 && v <= 930) return 240;                 // 15:00 后收盘价（腾讯含 15:30）
+      if (v > 555 && v < 570) return 0;                     // 9:25 竞价结果归入开盘
+      return null;
+    };
+    // 每天归一化：价格→相对该日昨收的涨跌幅%，并把分钟映射到该天槽位
+    const series = valid.map(d => {
+      const first = d.rows[0].price;
+      const base = Number(d.prevClose) > 0 ? Number(d.prevClose) : (Number(quote && quote.prevClose) > 0 ? Number(quote.prevClose) : first);
+      const pts = d.rows.map((x, i) => ({
+        i,
+        min: toMin(x.time),
+        pct: base > 0 ? (x.price - base) / base * 100 : 0,
+        price: x.price,
+        volume: Number(x.volume) || 0,
+        amount: Number(x.amount) || 0
+      })).filter(p => p.min !== null && p.min >= 0 && p.min <= SESS);
+      return { date: d.date, base, approx: !(Number(d.prevClose) > 0), pts };
+    }).filter(s => s.pts.length >= 2);
+    if (series.length < 2) return '<div class="empty">五日分时数据不足（需 ≥2 个有效交易日），无法绘制</div>';
+    const dayW = PW / series.length;
+    const X = (di, min) => L + di * dayW + Math.max(0, Math.min(SESS, min)) / SESS * dayW;
+    // 纵轴：以统一的涨跌幅%刻度对齐 5 天（东方财富口径），留白 12%
+    let maxDev = 0.02;
+    series.forEach(s => s.pts.forEach(p => { maxDev = Math.max(maxDev, Math.abs(p.pct)); }));
+    const hi = maxDev * 1.12, lo = -hi;
+    const Y = pct => PB - (pct - lo) / (hi - lo) * (PB - PT);
+    const a = [];
+    a.push('<svg viewBox="0 0 ' + W + ' ' + H + '" class="sm-chart-svg" preserveAspectRatio="xMidYMid meet">');
+    a.push('<text x="' + L + '" y="14" font-size="10.5" fill="#8593a3">五日分时 · 纵轴为相对各日昨收的涨跌幅 · ' + E((multi && multi.source) || '腾讯证券') + '</text>');
+    a.push('<circle cx="' + (W - R - 128) + '" cy="10.5" r="3" fill="var(--up)"/><text x="' + (W - R - 120) + '" y="14" font-size="10" fill="#8593a3">昨收上</text>');
+    a.push('<circle cx="' + (W - R - 62) + '" cy="10.5" r="3" fill="var(--down)"/><text x="' + (W - R - 54) + '" y="14" font-size="10" fill="#8593a3">昨收下</text>');
+    // 每天分隔竖线 + 日期标签
+    series.forEach((s, k) => {
+      if (k > 0) {
+        const dx = L + k * dayW;
+        a.push('<line x1="' + dx.toFixed(1) + '" y1="' + PT + '" x2="' + dx.toFixed(1) + '" y2="' + VB + '" stroke="#cbd5e1" stroke-dasharray="3 4"/>');
+      }
+      const lab = String(s.date).replace(/(\d{4})(\d{2})(\d{2})/, '$2-$3');
+      a.push('<text x="' + (L + k * dayW + dayW / 2).toFixed(1) + '" y="' + (VB + 15) + '" font-size="10.5" fill="#6b7a8c" text-anchor="middle">' + E(lab) + '</text>');
+    });
+    // 横向网格 + 涨跌幅刻度
+    for (let k = 0; k <= 4; k++) {
+      const pct = lo + (hi - lo) * k / 4, y = Y(pct);
+      const col = pct > 0.01 ? 'var(--up)' : pct < -0.01 ? 'var(--down)' : 'var(--ink2)';
+      a.push('<line x1="' + L + '" y1="' + y.toFixed(1) + '" x2="' + (W - R) + '" y2="' + y.toFixed(1) + '" stroke="#eef2f7"/>');
+      a.push('<text x="' + (W - R + 6) + '" y="' + (y + 4).toFixed(1) + '" font-size="11" fill="' + col + '">' + (pct > 0 ? '+' : '') + pct.toFixed(2) + '%</text>');
+    }
+    // 昨收基准线
+    a.push('<line x1="' + L + '" y1="' + Y(0).toFixed(1) + '" x2="' + (W - R) + '" y2="' + Y(0).toFixed(1) + '" stroke="#8593a3" stroke-dasharray="4 4"/>');
+    // 成交量柱（每天以当日最大量为基准，段间不混算）
+    series.forEach((s, di) => {
+      const maxV = Math.max(1, ...s.pts.map(p => p.volume));
+      const step = dayW / SESS;
+      const bw = Math.max(0.6, step * 0.62);
+      s.pts.forEach(p => {
+        const h = p.volume / maxV * (VB - VT);
+        a.push('<rect x="' + (X(di, p.min) - bw / 2).toFixed(1) + '" y="' + (VB - h).toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + h.toFixed(1) + '" fill="' + (p.pct >= 0 ? 'var(--up)' : 'var(--down)') + '" opacity=".5"/>');
+      });
+    });
+    // 价格线：每天独立分段（不跨日连线），昨收上方红/下方绿，穿越处插值
+    series.forEach((s, di) => {
+      const pts = s.pts;
+      const segUp = [], segDown = [];
+      const pt = (arr, x, y, move) => arr.push((move ? 'M' : 'L') + x.toFixed(1) + ' ' + y.toFixed(1));
+      let side = pts[0].pct >= 0 ? 'up' : 'down';
+      pt(side === 'up' ? segUp : segDown, X(di, pts[0].min), Y(pts[0].pct), true);
+      for (let i = 1; i < pts.length; i++) {
+        const p0 = pts[i - 1], p1 = pts[i];
+        const x0 = X(di, p0.min), x1 = X(di, p1.min);
+        const up0 = p0.pct >= 0, up1 = p1.pct >= 0;
+        if (up0 === up1) {
+          pt(side === 'up' ? segUp : segDown, x1, Y(p1.pct), false);
+        } else {
+          const cross = x0 + (x1 - x0) * ((0 - p0.pct) / (p1.pct - p0.pct));
+          pt(side === 'up' ? segUp : segDown, cross, Y(0), false);
+          side = up1 ? 'up' : 'down';
+          pt(side === 'up' ? segUp : segDown, cross, Y(0), true);
+          pt(side === 'up' ? segUp : segDown, x1, Y(p1.pct), false);
+        }
+      }
+      if (segUp.length) a.push('<path d="' + segUp.join(' ') + '" fill="none" stroke="var(--up)" stroke-width="1.6" stroke-linejoin="round"/>');
+      if (segDown.length) a.push('<path d="' + segDown.join(' ') + '" fill="none" stroke="var(--down)" stroke-width="1.6" stroke-linejoin="round"/>');
+    });
+    a.push('<text x="' + L + '" y="' + (VT - 6) + '" font-size="10.5" fill="#8593a3">成交量（手，各日独立刻度）</text>');
+    a.push('</svg>');
+    return a.join('');
+  }
+
   /** 资金流柱状图：主力净流入（超大单+大单），红涨绿跌，与K线同一时间窗对齐 */
   function smFundSvg(fundRows, view, period) {
     const rows = fundRows || [];
@@ -3737,48 +3885,7 @@
           '）· ' + E(fn.source || '') + '</span></div>'
         : '';
       // 右侧信息栏（参考东方财富分时图）：现价快照 + 涨停/炸板封单详情，均为真实接口数据
-      const sideRow = (k, v, cls) => '<div class="sm-side-row"><span>' + k + '</span><b class="' + (cls || '') + '">' + v + '</b></div>';
-      const qcls2 = q.pct > 0 ? 'up' : q.pct < 0 ? 'down' : '';
-      const num = v => (v === null || v === undefined || !Number.isFinite(Number(v))) ? null : Number(v);
-      const signPct = v => { const x = num(v); return x === null ? '—' : (x > 0 ? '+' : '') + N(x) + '%'; };
-      const fmtVol = v => { const x = num(v); return x === null ? '—' : (x >= 10000 ? (x / 10000).toFixed(2) + '万手' : x.toFixed(0) + '手'); };
-      const fmtAmt = v => { const x = num(v); return x === null ? '—' : (x >= 10000 ? (x / 10000).toFixed(2) + '亿' : x.toFixed(0) + '万'); };
-      const devCls = v => { const x = num(v), base = num(q.prevClose); return (x !== null && base !== null && base > 0) ? (x > base ? 'up' : x < base ? 'down' : '') : ''; };
-      let sidePanel = '';
-      if (!hist) {
-        const quoteRows = [
-          ['现价', N(q.price), qcls2],
-          ['涨跌', num(q.change) === null ? '—' : (num(q.change) > 0 ? '+' : '') + N(q.change), qcls2],
-          ['涨幅', signPct(q.pct), qcls2],
-          ['今开', N(q.open), devCls(q.open)],
-          ['昨收', N(q.prevClose), ''],
-          ['最高', N(q.high), devCls(q.high)],
-          ['最低', N(q.low), devCls(q.low)],
-          ['均价', N(q.avgPrice), ''],
-          ['成交量', fmtVol(q.volume), ''],
-          ['成交额', fmtAmt(q.amountWan), ''],
-          ['换手', num(q.turnover) === null ? '—' : N(q.turnover) + '%', ''],
-          ['量比', N(q.volRatio), ''],
-          ['振幅', num(q.amplitude) === null ? '—' : N(q.amplitude) + '%', ''],
-          ['涨停价', N(q.limitUp), 'up'],
-          ['跌停价', N(q.limitDown), 'down']
-        ].map(r => sideRow(r[0], r[1], r[2])).join('');
-        const sealHtml = seal
-          ? '<div class="sm-side-seal' + (seal.kind === 'zb' ? ' is-broken' : '') + '">' +
-              '<div class="sm-side-seal-h"><b>' + (seal.kind === 'zb' ? '炸板池封单快照' : '涨停封单') + '</b>' +
-              (Number(seal.boards) > 1 ? '<span>' + seal.boards + ' 连板</span>' : '') + '</div>' +
-              sideRow('封单额', money(seal.sealFund), 'seal-amt') +
-              (Number.isFinite(seal.sealFundRatio) && seal.sealFundRatio !== null ? sideRow('占流通', N(seal.sealFundRatio) + '%', '') : '') +
-              sideRow('首封时间', E(seal.firstSeal || '—'), '') +
-              sideRow('炸板次数', (Number(seal.brokenCount) || 0) + ' 次', Number(seal.brokenCount) > 0 ? 'down' : '') +
-              '<div class="sm-side-seal-foot">' + E(String(seal.date || '')) + ' · ' + E(seal.source || '') + '</div>' +
-            '</div>'
-          : '<div class="sm-side-seal is-none"><div class="sm-side-seal-h"><b>涨停封单</b></div>' +
-            '<div class="sm-side-seal-none">该股当日未进入涨停 / 炸板池，无封单快照</div></div>';
-        sidePanel = '<div class="sm-minute-side">' +
-          '<div class="sm-side-quote"><div class="sm-side-h">分时快照 <span class="small muted">' + E(q.ticktime || '') + '</span></div>' + quoteRows + '</div>' +
-          sealHtml + '</div>';
-      }
+      const sidePanel = hist ? '' : smQuoteSealSide(q, seal);
       const chartHtml = md.rows && md.rows.length
         // 历史模式传空 quote：不画"竞价开盘"虚线、不用今日昨收当历史日基准（改用该日首分钟价为基准）
         ? '<div class="sm-minute-chart">' + smMinuteSvg(rows, hist ? {} : q, md.date, seal) + '</div>'
@@ -3816,6 +3923,27 @@
       const bt = $('smBackToday');
       if (bt) bt.onclick = () => { S.chart.histDate = null; S.chart.histMinute = null; syncMinuteTimer(); renderStockChart(); };
       syncMinuteTimer();
+      return;
+    }
+    if (per === 'multiDay') {
+      stopMinuteTimer();
+      S.chart.histDate = null;
+      const md = j.multiDay || {};
+      const q = j.quote || {};
+      const seal = j.seal || null;
+      const days = md.days || [];
+      const approxCnt = days.filter(d => !(Number(d.prevClose) > 0)).length;
+      [...document.querySelectorAll('.sm-tab')].forEach(b => b.classList.toggle('active', b.dataset.period === per));
+      $('smSource').textContent = '五日分时 · ' + E(md.source || '来源不可用') + (days.length ? ' · ' + days.length + ' 个交易日（' + E(String(days[0].date).replace(/(\d{4})(\d{2})(\d{2})/, '$2-$3')) + ' ~ ' + E(String(days[days.length - 1].date).replace(/(\d{4})(\d{2})(\d{2})/, '$2-$3')) + '）' : '');
+      const sidePanel = smQuoteSealSide(q, seal);
+      const chartHtml = days.length >= 2
+        ? '<div class="sm-minute-chart">' + smFiveDaySvg(md, q) + '</div>'
+        : '<div class="empty">' + E(md.reason || '五日分时数据暂不可用') + '</div>';
+      $('smBody').innerHTML = '<div class="sm-minute-layout">' + chartHtml + sidePanel + '</div>';
+      $('smFoot').innerHTML = '<div class="note-box"><b>五日分时口径：</b>连续展示最近 <b>' + days.length + '</b> 个交易日的 1 分钟分时（腾讯证券），' +
+        '每天以<b>各自昨收</b>（取日K前一交易日收盘）为基准换算涨跌幅，故横轴 5 天纵向可比、段间不连线；红色为昨收之上、绿色为昨收之下，成交量按各日独立刻度。' +
+        (approxCnt ? '<b class="warn">' + approxCnt + ' 天昨收取日K失败，已用当日首分钟价兜底</b>，该日涨跌幅基准可能有偏差。' : '') +
+        '<br><b>右侧快照 / 封单：</b>现价与封单为<b>最新交易日</b>的实时数据，不适用于历史各日；五日图仅用于对比多日日内形态，不构成投资建议。</div>';
       return;
     }
     const series = j[per] || {};
