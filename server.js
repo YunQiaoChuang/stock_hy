@@ -465,7 +465,9 @@ async function getStockChart(query) {
     fund: {
       day: { rows: fundHistory.rows || [], source: fundHistory.source || null, reason: fundHistory.reason || null, name: fundHistory.name || null },
       week: { rows: fundWeek, source: fundHistory.source || null, reason: fundHistory.reason || null },
-      note: '主力净流入=超大单+大单净额（东方财富口径）；周线为真实日线按自然周加总。DDX/DDZ 为第三方专有算法指标，公开接口无法取得真实序列，系统不提供估算值。',
+      note: (fundHistory.caliber || '主力净流入=超大单+大单净额（东方财富口径）') +
+        '；周线为真实日线按自然周加总。DDX/DDZ 为第三方专有算法指标，公开接口无法取得真实序列，系统不提供估算值。' +
+        (fundHistory.source === ds.SOURCE_META.sinaFundHist.label ? ' 本次东财资金流接口不可用，已自动降级为新浪口径，数值与东财口径不可直接比较。' : ''),
       now: fundNow || {}
     },
     chip: { day: chipDay, week: chipWeek },
