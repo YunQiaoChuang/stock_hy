@@ -41,7 +41,7 @@
   }
   /* ── 连板天梯「晋级标记」显示开关（细粒度）：首板种子★晋级角标、历史优势组合彩色边框各自独立，存 localStorage ── */
   const LADDER_MARKS_KEY = 'stockhy_ladder_marks_v2';
-  const LADDER_MARKS_DEFAULT = { seed: true, edge: true };
+  const LADDER_MARKS_DEFAULT = { seed: false, edge: true };
   function ladderMarksLoad() {
     try {
       const o = JSON.parse(localStorage.getItem(LADDER_MARKS_KEY) || 'null');
