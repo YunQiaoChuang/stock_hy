@@ -676,7 +676,12 @@
 
     $('pane-review').innerHTML =
       '<div class="sec"><div class="sec-head"><h3>一、盘面结构与状态诊断</h3>' + src('新浪财经全市场快照 / 腾讯证券指数 / 东方财富涨停池，时点 ' + TICK(m)) + '</div>' +
-      '<div class="grid2"><div class="card pad"><div class="fact-list">' + facts + '</div></div>' +
+      '<div class="grid2"><div class="review-left">' +
+      '<div class="card pad"><div class="fact-list">' + facts + '</div></div>' +
+      '<div class="sub-sec-head" style="margin-top:2px;padding-top:0;border-top:none"><h4>主线题材与生命周期</h4>' + src('东方财富涨停池行业归属 + 新浪财经板块行情，交易日 ' + (m.poolDate || '—')) + '</div>' +
+      '<div class="review-theme-list">' + (themes || '<div class="empty">当前无涨停题材分组数据</div>') + '</div>' +
+      '<div class="note-box"><b>龙一 / 龙二 / 龙三</b>＝题材内按连板高度→封单比→首封时间→累计涨停数机械排名（与连板天梯「板块龙头」同口径，悬停看封单比/首封时间），仅表当日地位、不代表次日表现。<br>题材阶段完全由量价结构（涨停扩散数 / 连板高度 / 梯队完整度 / 炸板负反馈率 / 板块涨跌幅）机械推导，本页评分不纳入新闻与公告数据（消息面见「明日龙头」模块独立监控）；阶段判断为前瞻性推演，需次日盘面验证。</div>' +
+      '</div>' +
       '<div class="card pad"><div class="em-ladder-head">' +
       '<h4 style="font-size:12.5px;margin-bottom:6px">天梯 <span class="small muted" style="font-weight:400">' +
       (S.ladderKind === 'dt' ? '（按连续跌停天数分层 · 标注最多跌停板块）' : '（东方财富式 · 按板级分层）') + '</span></h4>' +
@@ -708,9 +713,6 @@
           '<br>板块地位标注规则（按东财行业分组机械判定，非投资建议）：<b class="up">板块龙头</b>=同行业连板最高且封单最强；<b style="color:var(--warn)">反包核心 / 题材龙 / 封单核心</b>=累计板最高 / 连板最高 / 封单最强但不同时满足龙头条件；板块跟风=连板低于行业最高；独苗=行业仅 1 只涨停。<br>每层按封单比降序、首封时间升序排列；封单比 ≥1% 标红、0.3%~1% 标橙、&lt;0.3% 标灰，炸板次数越多风险越高。数据：东方财富涨停池 + 腾讯证券实时快照。' +
           '</div>') +
       '</div></div>' +
-      '<div class="sub-sec-head"><h4>主线题材与生命周期</h4>' + src('东方财富涨停池行业归属 + 新浪财经板块行情，交易日 ' + (m.poolDate || '—')) + '</div>' +
-      '<div class="grid2">' + (themes || '<div class="empty">当前无涨停题材分组数据</div>') + '</div>' +
-      '<div class="note-box"><b>龙一 / 龙二 / 龙三</b>＝题材内按连板高度→封单比→首封时间→累计涨停数机械排名（与连板天梯「板块龙头」同口径，悬停看封单比/首封时间），仅表当日地位、不代表次日表现。<br>题材阶段完全由量价结构（涨停扩散数 / 连板高度 / 梯队完整度 / 炸板负反馈率 / 板块涨跌幅）机械推导，本页评分不纳入新闻与公告数据（消息面见「明日龙头」模块独立监控）；阶段判断为前瞻性推演，需次日盘面验证。</div>' +
       '</div>' +
 
       fundHtml +
