@@ -4,6 +4,7 @@ data/
 # 本地调试脚本与浏览器缓存
 .dg-check/
 scripts/
+dash.json
 
 # 自动化本地运行状态
 .workbuddy/memory/automations/
