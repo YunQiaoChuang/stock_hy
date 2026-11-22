@@ -96,6 +96,9 @@ input:focus,select:focus{border-color:var(--blue2);box-shadow:0 0 0 2px rgba(47,
 .sec{margin-bottom:16px}
 .sec-head{display:flex;align-items:baseline;gap:10px;margin-bottom:9px;flex-wrap:wrap}
 .sec-head h3{font-size:14px}
+.sub-sec-head{display:flex;align-items:baseline;gap:10px;margin:14px 0 9px;flex-wrap:wrap;padding-top:12px;border-top:1px dashed var(--line)}
+.sub-sec-head h4{font-size:13px;margin:0}
+.sub-sec-head .src{font-size:10.5px;color:var(--muted)}
 .sec-head .src{font-size:10.5px;color:var(--muted)}
 .sec-head .spacer{flex:1}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}

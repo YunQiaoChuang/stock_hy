@@ -655,7 +655,7 @@
           '<div>' + ff.concept.slice().sort((a, b) => a.net - b.net).slice(0, 6).map(fundRow).join('') + '</div></div>'
         : '') +
       '</div></div>' +
-      '<div class="note-box">板块涨跌幅与领涨股为新浪财经公开板块行情；资金流主源为腾讯证券、新浪为备用（新浪接口近期不稳定）。涨停题材分组见下一节「主线题材与生命周期」。资金流与板块行情均为公开接口的当日快照，<b>不构成投资建议</b>。</div></div>';
+      '<div class="note-box">板块涨跌幅与领涨股为新浪财经公开板块行情；资金流主源为腾讯证券、新浪为备用（新浪接口近期不稳定）。涨停题材分组见上一节「盘面结构与状态诊断」内的「主线题材与生命周期」。资金流与板块行情均为公开接口的当日快照，<b>不构成投资建议</b>。</div></div>';
 
     const prevLadderHtml = '<div class="sec"><div class="sec-head"><h3>昨日连板天梯 · 今日晋级情况</h3>' +
       src('东方财富历史涨停池 ' + (pl.prevDate || '—') + ' → 今日涨停池 ' + (pl.currDate || '—') + ' + 腾讯证券实时快照') + '</div>' +
@@ -707,20 +707,21 @@
           '<div class="note-box">空间板：' + space + '<br>梯队判读：' + E(ov.gap ? '存在断层，按 leader-game 框架属退潮前置信号，需次日 2/3 板补齐确认。' : '梯队连续无断层，情绪延续性优于断层结构。') +
           '<br>板块地位标注规则（按东财行业分组机械判定，非投资建议）：<b class="up">板块龙头</b>=同行业连板最高且封单最强；<b style="color:var(--warn)">反包核心 / 题材龙 / 封单核心</b>=累计板最高 / 连板最高 / 封单最强但不同时满足龙头条件；板块跟风=连板低于行业最高；独苗=行业仅 1 只涨停。<br>每层按封单比降序、首封时间升序排列；封单比 ≥1% 标红、0.3%~1% 标橙、&lt;0.3% 标灰，炸板次数越多风险越高。数据：东方财富涨停池 + 腾讯证券实时快照。' +
           '</div>') +
-      '</div></div></div>' +
+      '</div></div>' +
+      '<div class="sub-sec-head"><h4>主线题材与生命周期</h4>' + src('东方财富涨停池行业归属 + 新浪财经板块行情，交易日 ' + (m.poolDate || '—')) + '</div>' +
+      '<div class="grid2">' + (themes || '<div class="empty">当前无涨停题材分组数据</div>') + '</div>' +
+      '<div class="note-box"><b>龙一 / 龙二 / 龙三</b>＝题材内按连板高度→封单比→首封时间→累计涨停数机械排名（与连板天梯「板块龙头」同口径，悬停看封单比/首封时间），仅表当日地位、不代表次日表现。<br>题材阶段完全由量价结构（涨停扩散数 / 连板高度 / 梯队完整度 / 炸板负反馈率 / 板块涨跌幅）机械推导，本页评分不纳入新闻与公告数据（消息面见「明日龙头」模块独立监控）；阶段判断为前瞻性推演，需次日盘面验证。</div>' +
+      '</div>' +
+
       fundHtml +
       prevLadderHtml +
 
-      '<div class="sec"><div class="sec-head"><h3>三、主线题材与生命周期</h3>' + src('东方财富涨停池行业归属 + 新浪财经板块行情，交易日 ' + (m.poolDate || '—')) + '</div>' +
-      '<div class="grid2">' + (themes || '<div class="empty">当前无涨停题材分组数据</div>') + '</div>' +
-      '<div class="note-box"><b>龙一 / 龙二 / 龙三</b>＝题材内按连板高度→封单比→首封时间→累计涨停数机械排名（与连板天梯「板块龙头」同口径，悬停看封单比/首封时间），仅表当日地位、不代表次日表现。<br>题材阶段完全由量价结构（涨停扩散数 / 连板高度 / 梯队完整度 / 炸板负反馈率 / 板块涨跌幅）机械推导，本页评分不纳入新闻与公告数据（消息面见「明日龙头」模块独立监控）；阶段判断为前瞻性推演，需次日盘面验证。</div></div>' +
+      '<div class="sec"><div class="sec-head"><h3>三、明日博弈焦点</h3><span class="src">依据：leader-game 涨停结构 + theme-lifecycle 阶段研判</span></div><div class="grid3">' + focus + '</div></div>' +
 
-      '<div class="sec"><div class="sec-head"><h3>四、明日博弈焦点</h3><span class="src">依据：leader-game 涨停结构 + theme-lifecycle 阶段研判</span></div><div class="grid3">' + focus + '</div></div>' +
-
-      '<div class="sec"><div class="sec-head"><h3>五、条件化操作框架</h3><span class="src">条件 → 动作 → 风险，非买卖指令</span></div>' +
+      '<div class="sec"><div class="sec-head"><h3>四、条件化操作框架</h3><span class="src">条件 → 动作 → 风险，非买卖指令</span></div>' +
       '<div class="card pad"><div class="plan-row plan-head"><div class="col">触发条件</div><div class="col">对应动作</div><div class="col">风险 / 反例</div></div>' + planRows + '</div></div>' +
 
-      '<div class="sec"><div class="sec-head"><h3>六、风险提示与数据边界</h3></div><div class="card pad"><ul class="tight">' + risks + '</ul>' +
+      '<div class="sec"><div class="sec-head"><h3>五、风险提示与数据边界</h3></div><div class="card pad"><ul class="tight">' + risks + '</ul>' +
       '<div class="note-box">本模块为复盘与观察框架，不预测指数涨跌方向；所有仓位表述均为研究框架示例，需结合个人风险承受能力独立判断。</div></div></div>';
 
     const ladderOpt = {
