@@ -579,10 +579,14 @@
       : '';
 
     const dragonRow = t => (t.dragons && t.dragons.length
-      ? '<div class="theme-dragons">' + t.dragons.map(d =>
-          '<span class="th-dragon d' + d.rank + '" title="' + E(d.code + ' · ' + d.boards + ' 板 · 封单比 ' + (d.sealRatio === null ? '—' : N(d.sealRatio) + '%') + ' · 首封 ' + (d.firstSeal || '—') + ' · 按连板高度→封单比→首封时间机械排名') + '">' +
-          '<b>' + E(d.label) + '</b>' + E(d.name) + '<span class="th-dragon-b">' + d.boards + '板</span></span>'
-        ).join('') + '</div>'
+      ? '<div class="theme-dragons">' + t.dragons.map(d => {
+          const dragonTip = E(d.code + ' · ' + d.boards + ' 板 · 封单比 ' + (d.sealRatio === null ? '—' : N(d.sealRatio) + '%') + ' · 首封 ' + (d.firstSeal || '—') + ' · 按连板高度→封单比→首封时间机械排名');
+          return '<span class="th-dragon d' + d.rank + '">' +
+            '<b>' + E(d.label) + '</b>' +
+            // 股票名带 data-stock-code，走全站事件委托打开分时/日K；title 合并排名依据与点击提示
+            '<span class="stock-link" data-stock-code="' + E(d.code) + '" title="' + dragonTip + '｜点击查看分时图">' + E(d.name) + '</span>' +
+            '<span class="th-dragon-b">' + d.boards + '板</span></span>';
+        }).join('') + '</div>'
       : '');
     const themes = (rv.topThemes || []).map(t =>
       '<div class="info-card theme-card"><h4>' + E(t.name) + ' <span class="mini-tag">' + t.count + ' 只涨停</span></h4>' +
