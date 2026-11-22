@@ -578,9 +578,16 @@
         '<span class="small muted">按东财行业归属统计（无稳定题材映射，不臆造）</span></div>'
       : '';
 
+    const dragonRow = t => (t.dragons && t.dragons.length
+      ? '<div class="theme-dragons">' + t.dragons.map(d =>
+          '<span class="th-dragon d' + d.rank + '" title="' + E(d.code + ' · ' + d.boards + ' 板 · 封单比 ' + (d.sealRatio === null ? '—' : N(d.sealRatio) + '%') + ' · 首封 ' + (d.firstSeal || '—') + ' · 按连板高度→封单比→首封时间机械排名') + '">' +
+          '<b>' + E(d.label) + '</b>' + E(d.name) + '<span class="th-dragon-b">' + d.boards + '板</span></span>'
+        ).join('') + '</div>'
+      : '');
     const themes = (rv.topThemes || []).map(t =>
       '<div class="info-card theme-card"><h4>' + E(t.name) + ' <span class="mini-tag">' + t.count + ' 只涨停</span></h4>' +
       '<div class="theme-meta">' + tag('最高 ' + t.maxBoard + ' 板', 'red') + tag(t.stage, 'purple') + tag('预期：' + t.outlook, t.outlookScore >= 3 ? 'red' : 'warn') + (t.gap ? tag('梯队断层', 'warn') : '') + '</div>' +
+      dragonRow(t) +
       '<p><b>阶段依据：</b>' + E(t.stageBasis) + '</p>' +
       '<p style="margin-top:5px"><b>持续性：</b>' + E(t.outlookBasis) + '</p>' +
       (t.boardRef ? '<p style="margin-top:5px"><b>板块参照：</b>' + E(t.boardRef.name) + ' ' + (t.boardRef.pct > 0 ? '+' : '') + N(t.boardRef.pct) + '%，领涨 ' + E(t.boardRef.leaderName) + '（新浪财经板块行情）</p>' : '') +
@@ -706,7 +713,7 @@
 
       '<div class="sec"><div class="sec-head"><h3>三、主线题材与生命周期</h3>' + src('东方财富涨停池行业归属 + 新浪财经板块行情，交易日 ' + (m.poolDate || '—')) + '</div>' +
       '<div class="grid2">' + (themes || '<div class="empty">当前无涨停题材分组数据</div>') + '</div>' +
-      '<div class="note-box">题材阶段完全由量价结构（涨停扩散数 / 连板高度 / 梯队完整度 / 炸板负反馈率 / 板块涨跌幅）机械推导，本页评分不纳入新闻与公告数据（消息面见「明日龙头」模块独立监控）；阶段判断为前瞻性推演，需次日盘面验证。</div></div>' +
+      '<div class="note-box"><b>龙一 / 龙二 / 龙三</b>＝题材内按连板高度→封单比→首封时间→累计涨停数机械排名（与连板天梯「板块龙头」同口径，悬停看封单比/首封时间），仅表当日地位、不代表次日表现。<br>题材阶段完全由量价结构（涨停扩散数 / 连板高度 / 梯队完整度 / 炸板负反馈率 / 板块涨跌幅）机械推导，本页评分不纳入新闻与公告数据（消息面见「明日龙头」模块独立监控）；阶段判断为前瞻性推演，需次日盘面验证。</div></div>' +
 
       '<div class="sec"><div class="sec-head"><h3>四、明日博弈焦点</h3><span class="src">依据：leader-game 涨停结构 + theme-lifecycle 阶段研判</span></div><div class="grid3">' + focus + '</div></div>' +
 

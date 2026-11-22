@@ -132,6 +132,16 @@ tbody tr.clickable{cursor:pointer}
 .info-card p{margin:0;color:var(--ink2);font-size:12px;line-height:1.65}
 .theme-card{border-left:3px solid var(--purple)}
 .theme-meta{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 8px}
+.theme-dragons{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 9px}
+.th-dragon{display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:5px;font-size:11px;line-height:1.5;border:1px solid var(--line);background:#f7f9fc;color:var(--ink2);cursor:help}
+.th-dragon b{font-size:9.5px;font-weight:700;padding:0 3px;border-radius:3px;color:#fff;letter-spacing:.2px}
+.th-dragon .th-dragon-b{color:var(--muted);font-size:10px}
+.th-dragon.d1{border-color:#f3cfcf;background:var(--up-bg)}
+.th-dragon.d1 b{background:var(--up)}
+.th-dragon.d2{border-color:#f5dcb4;background:var(--warn-bg)}
+.th-dragon.d2 b{background:var(--warn)}
+.th-dragon.d3{border-color:#cfe0f7;background:var(--blue-bg)}
+.th-dragon.d3 b{background:var(--blue2)}
 .plan-row{display:grid;grid-template-columns:1.1fr 1.2fr 1.1fr;gap:0;border-bottom:1px solid var(--line2);padding:10px 0;font-size:12px}
 .plan-row:last-child{border-bottom:none}
 .plan-row .col{padding:0 12px;border-right:1px solid var(--line2)}
