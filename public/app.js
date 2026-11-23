@@ -4013,6 +4013,17 @@
     const hi = prev * (1 + maxDev * 1.12), lo = prev * (1 - maxDev * 1.12);
     const Y = p => PB - (p - lo) / (hi - lo) * (PB - PT);
 
+    // 当前涨幅：当日分时优先用行情快照口径（相对昨收）；历史分时无快照，
+    // 退化为「相对该日首分钟价」的区间涨幅，文案也相应改为「较首价」，避免误标成实时涨幅。
+    const lastPrice = Number(rows[rows.length - 1] && rows[rows.length - 1].price);
+    const rawPct = quote && quote.pct;
+    const hasSnapPct = rawPct !== null && rawPct !== undefined && rawPct !== '' && Number.isFinite(Number(rawPct)) && Number(quote && quote.prevClose) > 0;
+    const snapPct = hasSnapPct ? Number(rawPct) : null;
+    const chartPct = prev > 0 && Number.isFinite(lastPrice) ? (lastPrice - prev) / prev * 100 : null;
+    const curPct = hasSnapPct ? snapPct : chartPct;
+    const curPctText = curPct === null ? null : (curPct > 0 ? '+' : '') + curPct.toFixed(2) + '%';
+    const curColor = curPct === null || Math.abs(curPct) < 0.005 ? 'var(--ink2)' : (curPct > 0 ? 'var(--up)' : 'var(--down)');
+
     // A股交易时段 09:30–11:30、13:00–15:00 共 240 分钟，横轴按真实时间定位。
     // 盘中只画到当前时刻，右侧剩余时段留白，不再把已有分钟拉伸铺满整幅。
     const TOTAL = 240;
@@ -4112,9 +4123,26 @@
       a.push('<text x="' + tX(tk.m).toFixed(1) + '" y="' + (VB + 15) + '" font-size="10.5" fill="#6b7a8c" text-anchor="' + anchor + '">' + tk.t + '</text>');
     });
     a.push('<text x="' + L + '" y="14" font-size="10.5" fill="#8593a3">分时价格 / 均价 · ' + E(mdate || '最近交易日') + ' · 腾讯证券</text>');
+    // 图内右上角醒目标注当前涨幅（红涨绿跌），与右侧图例错开，不遮挡分时曲线
+    if (curPctText) {
+      a.push('<rect x="' + (W - R - 274) + '" y="2" width="132" height="18" rx="4" fill="' + curColor + '" opacity=".10"/>');
+      a.push('<text x="' + (W - R - 208) + '" y="14.5" font-size="12" font-weight="700" text-anchor="middle" fill="' + curColor + '">' +
+        (hasSnapPct ? '当前涨幅 ' : '较首价 ') + curPctText + '</text>');
+    }
     a.push('<circle cx="' + (W - R - 128) + '" cy="10.5" r="3" fill="var(--up)"/><text x="' + (W - R - 120) + '" y="14" font-size="10" fill="#8593a3">昨收上</text>');
     a.push('<circle cx="' + (W - R - 62) + '" cy="10.5" r="3" fill="var(--down)"/><text x="' + (W - R - 54) + '" y="14" font-size="10" fill="#8593a3">昨收下</text>');
     a.push('<text x="' + L + '" y="' + (VT - 6) + '" font-size="10.5" fill="#8593a3">成交量（手）</text>');
+    // 分时线末端：现价 + 涨幅跟随曲线终点，盘中一眼可见；靠近右边界时标签自动翻到左侧
+    if (Number.isFinite(lastPrice) && curPctText) {
+      const lx = X(rows.length - 1), ly = Y(lastPrice);
+      const rightSide = lx < W - R - 118;
+      const tx = rightSide ? lx + 9 : lx - 9;
+      const ty = Math.max(PT + 13, Math.min(PB - 8, ly - 8));
+      a.push('<circle cx="' + lx.toFixed(1) + '" cy="' + ly.toFixed(1) + '" r="3.6" fill="' + curColor + '" stroke="#fff" stroke-width="1.2"/>');
+      a.push('<text x="' + tx.toFixed(1) + '" y="' + ty.toFixed(1) + '" text-anchor="' + (rightSide ? 'start' : 'end') +
+        '" font-size="11.5" font-weight="700" fill="' + curColor + '" paint-order="stroke" stroke="#fff" stroke-width="3" stroke-linejoin="round">' +
+        lastPrice.toFixed(2) + ' ' + curPctText + '</text>');
+    }
     a.push('</svg>');
     return a.join('');
   }
