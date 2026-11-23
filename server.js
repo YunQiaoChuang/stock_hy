@@ -530,6 +530,97 @@ async function getPullback(query, force) {
   return pullCache.inflight;
 }
 
+/* ─────────── 尾盘主力流入（14:30–15:00，主板） ─────────── */
+const tailCache = { at: 0, key: '', value: null, inflight: null };
+async function buildTailFlow(query) {
+  const t0 = Date.now();
+  const f = { ...query };
+  delete f._; delete f.force;
+  const scan = Math.min(200, Math.max(30, Number(f.scan) || 120));
+  const sort = f.sort === 'bigNet' ? 'bigNet' : 'mainNet';
+
+  // 1) 候选资金流榜：东财优先，失败自动降级新浪
+  let rank, fundSource, fallback = false, rankError = null;
+  try {
+    rank = await ds.getEMFundRank({ limit: scan, sort });
+    fundSource = rank.source;
+  } catch (e) {
+    rankError = String(e && e.message || e);
+    fallback = true;
+    rank = await ds.getSinaFundRank({ limit: scan }).catch(() => ({ rows: [], total: 0, asOf: new Date().toISOString(), source: '无' }));
+    fundSource = rank.source;
+  }
+  const rows = rank.rows || [];
+
+  // 2) 腾讯快照补全现价 / 涨跌幅 / 流通市值 / 换手 / 量比
+  const codes = rows.map(x => x.code);
+  const quotes = codes.length ? await ds.getQQQuotes(codes).catch(() => ({})) : {};
+
+  // 3) 逐只拉当日分钟资金流（低并发，避免上游限流）
+  const minMap = {};
+  const minResults = await limitedMap(rows, 4, async x => {
+    const mf = await ds.getMinFundFlow(x.code).catch(() => ({ minutes: [] }));
+    minMap[x.code] = mf;
+    return mf;
+  });
+  const minOk = minResults.filter(m => m && m.minutes && m.minutes.length).length;
+
+  // 4) 过滤 + 排名
+  const list = an.rankTailFunds(rows, minMap, f, quotes);
+
+  // 5) 口径与统计
+  const tailAvail = list.filter(x => x.tail.available).length;
+  const tailComplete = list.filter(x => x.tailComplete).length;
+  const tailPositive = list.filter(x => {
+    const net = (x.tailMainNet !== null && x.tailMainNet !== undefined) ? x.tailMainNet : x.dayMainNet;
+    return (net || 0) > 0;
+  }).length;
+  let windowNote;
+  if (tailAvail === 0) windowNote = '全天口径：分钟资金流不可用，已回退全天主力净流入排序';
+  else if (tailComplete === 0) windowNote = '尾盘窗口进行中：14:30 后的分钟资金尚未走完，结果随盘中数据更新';
+  else windowNote = '尾盘 14:30–15:00 分钟资金流累计';
+
+  const qTimes = Object.values(quotes).map(x => x && x.ticktime).filter(Boolean).sort();
+  const latestQT = qTimes.length ? qTimes[qTimes.length - 1] : null;
+  const quoteTick = latestQT && String(latestQT).length >= 14
+    ? String(latestQT).slice(8, 10) + ':' + String(latestQT).slice(10, 12) + ':' + String(latestQT).slice(12, 14) : null;
+
+  const summary = {
+    scanned: rows.length, minOk, shown: list.length,
+    tailAvail, tailComplete, tailPositive,
+    fallback, rankError, fundSource,
+    minuteUnavailable: rows.length - minOk
+  };
+  const meta = {
+    ...beijingNow(),
+    generatedAt: new Date().toISOString(),
+    elapsedMs: Date.now() - t0,
+    quoteTick,
+    filters: f,
+    window: windowNote,
+    methodology: an.TAIL_METHOD,
+    health: ds.getHealth(),
+    port: ACTIVE_PORT,
+    dataSourceNote: '候选资金流榜=' + fundSource + '；尾盘分钟资金流=东方财富 fflow 分时；现价/涨跌幅/流通市值/换手=腾讯证券实时行情。均为免费公开接口，非交易所官方推送。',
+    disclaimer: DISCLAIMER
+  };
+  return { meta, summary, list };
+}
+async function getTailFlow(query, force) {
+  const now = Date.now();
+  const key = JSON.stringify(query);
+  if (!force && tailCache.value && tailCache.key === key && now - tailCache.at < 30000) return tailCache.value;
+  if (tailCache.inflight) return tailCache.inflight;
+  tailCache.inflight = (async () => {
+    try {
+      const v = await buildTailFlow(query);
+      tailCache.value = v; tailCache.key = key; tailCache.at = Date.now();
+      return v;
+    } finally { tailCache.inflight = null; }
+  })();
+  return tailCache.inflight;
+}
+
 async function getDashboard(query, force) {
   const now = Date.now();
   const key = JSON.stringify(query);
@@ -1513,6 +1604,7 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (u.pathname === '/api/pullback') return sendJson(res, await getPullback(q, q.force === '1'));
+    if (u.pathname === '/api/tailflow') return sendJson(res, await getTailFlow(q, q.force === '1'));
     if (u.pathname === '/api/backtest') return sendJson(res, await getBacktest(q, q.force === '1'));
     if (u.pathname === '/api/dragon') return sendJson(res, await getDragon(q, q.force === '1'));
     if (u.pathname === '/api/dragon/review') return sendJson(res, await getDragonReview(q, q.force === '1'));

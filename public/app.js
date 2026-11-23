@@ -127,6 +127,8 @@
     newsKeyword: '', newsMethodOpen: false, newsShowAll: false,
     newsTimer: null, newsTickTimer: null, newsNextAt: 0, newsCodes: '',
     en: null, enLoading: false, enError: null, enOpts: { days: 8 },
+    tail: null, tailLoading: false, tailAt: 0, tailFilters: '', tailError: null,
+    tailMethodOpen: false, tailSort: 'mainNet', tailMin: '',
     chart: { open: false, code: null, name: null, period: 'minute', data: null, loading: false, error: null, view: null, geom: null, lockIdx: null },
     klColors: klLoadColors(), klPanelOpen: false
   };
@@ -194,7 +196,7 @@
     initLadderDates();
     const qs = new URLSearchParams(location.search);
     const initTab = qs.get('tab');
-    if (initTab && ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'auction', 'predict', 'enlighten'].indexOf(initTab) >= 0) switchTab(initTab);
+    if (initTab && ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'auction', 'predict', 'enlighten', 'tailflow'].indexOf(initTab) >= 0) switchTab(initTab);
     // 深链：?stock=000001&period=week 直接打开个股K线弹窗
     const initStock = qs.get('stock');
     if (/^\d{6}$/.test(initStock || '')) {
@@ -329,6 +331,8 @@
         (S.pullFilters !== S.lastFilters || Date.now() - S.pullAt > 60000)) loadPullback(false);
       if (S.tab === 'dragon' && Date.now() - S.dgAt > 12000 &&
         (S.dgFilters !== S.lastFilters || Date.now() - S.dgAt > 60000)) loadDragon(false);
+      if (S.tab === 'tailflow' && Date.now() - S.tailAt > 12000 &&
+        (S.tailFilters !== S.lastFilters || Date.now() - S.tailAt > 60000)) loadTailFlow(false);
       $('loading').classList.add('hide');
       $('alertBox').style.display = 'none';
     } catch (e) {
@@ -361,8 +365,9 @@
   function switchTab(t) {
     S.tab = t;
     [...$('tabs').children].forEach(c => c.classList.toggle('active', c.dataset.tab === t));
-    ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'auction', 'predict', 'enlighten'].forEach(k => $('pane-' + k).classList.toggle('active', k === t));
+    ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'auction', 'predict', 'enlighten', 'tailflow'].forEach(k => $('pane-' + k).classList.toggle('active', k === t));
     if (t === 'pullback' && !S.pull && !S.pullLoading) loadPullback(false);
+    if (t === 'tailflow' && !S.tail && !S.tailLoading) loadTailFlow(false);
     if (t === 'dragon') {
       const histParam = new URLSearchParams(location.search).get('hist');
       if (histParam && /^\d{8}$/.test(histParam)) {
@@ -401,6 +406,7 @@
     if (S.en) $('badgeEn').textContent = (S.en.best ? String(S.en.best.name).slice(0, 6) : '已回测');
     if (S.auction) $('badgeAuction').textContent = (S.auction.list || []).length || '—';
     if (S.predict) $('badgePredict').textContent = (S.predict.summary && S.predict.summary.focus) || '—';
+    if (S.tail) $('badgeTail').textContent = (S.tail.list || []).length;
   }
 
   function renderMeta(m, ov) {
@@ -2855,6 +2861,108 @@
       updateNwStatus();
       if (S.tab === 'dragon' && !S.newsPaused) scheduleNews(S.newsInterval);
     }
+  }
+
+  /* ─────────────── 尾盘主力流入（14:30–15:00，主板） ─────────────── */
+  const TAIL_MIN_OPTS = [['', '不限'], ['5000', '≥5000万'], ['10000', '≥1亿'], ['30000', '≥3亿']];
+  function tailNetCell(v) {
+    if (v === null || v === undefined || !Number.isFinite(Number(v))) return '<span class="flat">—</span>';
+    const n = Number(v), cls = n > 0 ? 'up' : n < 0 ? 'down' : 'flat';
+    return '<span class="' + cls + '">' + (n > 0 ? '+' : '') + AMT(n) + '</span>';
+  }
+  async function loadTailFlow(force) {
+    if (S.tailLoading) return;
+    S.tailLoading = true;
+    if (!S.tail) $('pane-tailflow').innerHTML = '<div class="card empty">正在扫描主板资金流、拉取尾盘分钟资金并累计…</div>';
+    const f = collectFilters();
+    const q = new URLSearchParams();
+    ['pctMin', 'pctMax', 'keyword', 'excludeST'].forEach(k => { if (f[k] !== '' && f[k] !== undefined) q.set(k, f[k]); });
+    q.set('sort', S.tailSort);
+    if (S.tailMin !== '') q.set('tailMin', S.tailMin);
+    q.set('limit', '80');
+    if (force) q.set('force', '1');
+    try {
+      const r = await fetch('/api/tailflow?' + q.toString(), { cache: 'no-store' });
+      const j = await r.json();
+      if (j.error) throw new Error(j.error);
+      S.tail = j; S.tailAt = Date.now(); S.tailFilters = describeFilters(f); S.tailError = null;
+      $('badgeTail').textContent = (j.list || []).length;
+      renderTailFlow();
+    } catch (e) {
+      S.tailError = e.message; S.tailAt = Date.now();
+      $('pane-tailflow').innerHTML =
+        '<div class="card empty">尾盘资金流加载失败：' + E(e.message) +
+        '<br><span class="small muted">可点击「重新扫描」重试；上游接口临时不可用时，系统不会填充推测数据。</span></div>' +
+        '<div class="card pad" style="margin-top:12px"><button class="btn btn-primary" id="tailRetry">重新扫描</button></div>';
+      if ($('tailRetry')) $('tailRetry').onclick = () => loadTailFlow(true);
+    } finally { S.tailLoading = false; }
+  }
+  function renderTailFlow() {
+    const j = S.tail; if (!j) return;
+    const m = j.meta || {}, s = j.summary || {}, list = j.list || [], meth = j.methodology || {};
+    const sortMain = S.tailSort !== 'bigNet';
+    const head =
+      '<div class="conclusion card" style="margin-bottom:12px;border-left-color:var(--purple)"><div class="lead">' +
+      '扫描主板资金流候选 <b>' + E(s.scanned) + '</b> 只，成功取得分钟资金流 <b>' + E(s.minOk) + '</b> 只，' +
+      '尾盘主力净流入为正 <b>' + E(s.tailPositive) + '</b> 只，按' + (sortMain ? '尾盘主力' : '尾盘大单') + '净流入降序排列。</div>' +
+      '<div class="tags">' +
+      tag('口径：' + E(m.window || '—'), 'blue') +
+      tag('候选源：' + E(s.fundSource || '—'), 'blue') +
+      (s.fallback ? tag('东财榜不可用·已降级新浪', 'warn') : '') +
+      tag('展示 ' + list.length + ' 只', '') +
+      '</div></div>';
+    const toolbar =
+      '<div class="card pad" style="margin-bottom:12px;display:flex;flex-wrap:wrap;gap:10px;align-items:center">' +
+      '<span class="small muted">排序口径</span>' +
+      '<div class="chips" id="tailSortChips">' +
+      '<button class="chip' + (sortMain ? ' active' : '') + '" data-sort="mainNet">尾盘主力净流入</button>' +
+      '<button class="chip' + (!sortMain ? ' active' : '') + '" data-sort="bigNet">尾盘大单净流入</button></div>' +
+      '<label class="check small muted">尾盘主力净流入 ≥ ' +
+      '<select id="tailMinSel" class="sel" style="height:28px">' +
+      TAIL_MIN_OPTS.map(o => '<option value="' + o[0] + '"' + (S.tailMin === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') +
+      '</select></label>' +
+      '<button class="btn btn-primary" id="tailRescan" style="margin-left:auto">重新扫描</button> ' +
+      '<button class="btn" id="tailMethod">' + (S.tailMethodOpen ? '收起' : '查看') + '口径说明</button>' +
+      '</div>';
+    const method = '<div class="card pad pb-method" id="tailMethodBox" style="display:' + (S.tailMethodOpen ? '' : 'none') + '">' +
+      '<h4 style="font-size:13px;margin-bottom:9px">' + E(meth.title || '尾盘主力流入 · 识别口径') + '</h4>' +
+      (meth.steps || []).map(st => '<div class="pb-step"><b>' + E(st.name) + '</b><span>' + E(st.text) + '</span></div>').join('') +
+      '<div class="note-box">' + E(meth.caveat || '') + '</div></div>';
+    const cols = ['#', '代码 / 名称', '板块', '现价', '涨跌幅', sortMain ? '尾盘主力净流入' : '尾盘大单净流入', '尾盘大单', '尾盘超大单', '全天主力净流入', '成交额', '流通市值', '换手', '行业', '尾盘分钟'];
+    const body = list.map((x, i) =>
+      '<tr>' +
+      '<td>' + (i + 1) + '</td>' +
+      '<td class="left">' + nameCell(x) + (x.isST ? ' <span class="mini-tag">ST</span>' : '') + '</td>' +
+      '<td><span class="mini-tag">' + E(x.board || '主板') + '</span></td>' +
+      '<td class="' + flashCls(x.code, x.price) + '">' + N(x.price) + '</td>' +
+      '<td>' + PC(x.pct) + '</td>' +
+      '<td><b>' + (sortMain ? tailNetCell(x.tailMainNet) : tailNetCell(x.tailBigNet)) + '</b></td>' +
+      '<td>' + tailNetCell(x.tailBigNet) + '</td>' +
+      '<td>' + tailNetCell(x.tailSuperNet) + '</td>' +
+      '<td>' + tailNetCell(x.dayMainNet) + '</td>' +
+      '<td>' + AMT(x.amount) + '</td>' +
+      '<td>' + CAP(x.floatCap) + '</td>' +
+      '<td>' + (x.turnover === null || x.turnover === undefined ? '—' : N(x.turnover, 1) + '%') + '</td>' +
+      '<td class="left">' + E(x.industry || '—') + '</td>' +
+      '<td>' + (x.tailMinutes ? x.tailMinutes + ' 分' : '—') + '</td>' +
+      '</tr>'
+    ).join('');
+    const table = '<div class="tbl-wrap"><table><thead><tr>' +
+      cols.map((c, i) => '<th class="' + (i === 1 || i === 12 ? 'left' : '') + '">' + E(c) + '</th>').join('') +
+      '</tr></thead><tbody>' + (body || '<tr><td colspan="14" class="empty">当前没有符合条件的标的，可放宽尾盘净流入下限 / 涨跌幅条件；非交易时段分钟资金流可能不可用。</td></tr>') +
+      '</tbody></table></div>';
+    const warn = (s.minuteUnavailable || 0) > 0 && (s.tailAvail || 0) > 0
+      ? '<div class="pb-warn">有 ' + E(s.minuteUnavailable) + ' 只候选未取到分钟资金流，已按全天主力净额参与排序；尾盘列以「—」展示。</div>' : '';
+    $('pane-tailflow').innerHTML = head + toolbar + method + warn + table +
+      '<div class="disclaimer" style="margin-top:14px"><strong>风险提示</strong>：尾盘资金流向为免费公开接口按成交单档位估算，非交易所官方数据，可能存在延迟与口径差异；尾盘流入仅为观察信号，不构成投资建议。市场有风险，投资需谨慎。</div>';
+    $('tailRescan').onclick = () => loadTailFlow(true);
+    $('tailMethod').onclick = () => {
+      S.tailMethodOpen = !S.tailMethodOpen;
+      $('tailMethodBox').style.display = S.tailMethodOpen ? '' : 'none';
+      $('tailMethod').textContent = S.tailMethodOpen ? '收起' : '查看';
+    };
+    $('tailSortChips').querySelectorAll('.chip').forEach(ch => { ch.onclick = () => { S.tailSort = ch.dataset.sort; loadTailFlow(true); }; });
+    $('tailMinSel').onchange = e => { S.tailMin = e.target.value; loadTailFlow(true); };
   }
 
   /* ─────────────── 页脚 ─────────────── */
