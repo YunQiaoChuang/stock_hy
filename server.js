@@ -255,7 +255,9 @@ async function buildDashboard(query) {
     disclaimer: DISCLAIMER
   };
 
-  return { meta, overview: ov, review, themes, picks, lowbuy, opportunities: opps, limitDownPool: pools.dt || [], boards, fundFlow, globalMarkets, relay, ai, prevLadder, firstBoardSeed: seed };
+  // 概率随主看板一起下发（内部有 10 分钟缓存，命中时只是内存计算，不额外拉行情）
+  const edgeStats = await getEdgeStats();
+  return { meta, overview: ov, review, themes, picks, lowbuy, opportunities: opps, limitDownPool: pools.dt || [], boards, fundFlow, globalMarkets, relay, ai, prevLadder, firstBoardSeed: seed, edgeStats };
 }
 
 /* ─────────── 涨停回调到支撑位（独立模块，避免拖慢主看板） ─────────── */
@@ -756,6 +758,23 @@ async function getBacktest(query, force) {
 }
 
 /* ─────────── 明日龙头 · 只做龙头 / 买在分歧卖在一致 ─────────── */
+// 「历史优势组合」概率：按当前可回溯窗口逐日回放统计，10 分钟重算一次（与历史池缓存同频）。
+// 结果随主看板 /api/dashboard 与 /api/dragon 一起下发，前端不再写死概率常量。
+const edgeStatsCache = { at: 0, value: null, inflight: null };
+async function getEdgeStats(force) {
+  if (!force && edgeStatsCache.value && Date.now() - edgeStatsCache.at < 600000) return edgeStatsCache.value;
+  if (edgeStatsCache.inflight) return edgeStatsCache.inflight;
+  edgeStatsCache.inflight = (async () => {
+    try {
+      const history = await ds.getPoolFullHistory(15).catch(() => ({ dates: [], byDate: {} }));
+      const value = an.dragonEdgeStats(history);
+      edgeStatsCache.value = value; edgeStatsCache.at = Date.now();
+      return value;
+    } finally { edgeStatsCache.inflight = null; }
+  })();
+  return edgeStatsCache.inflight;
+}
+
 const dragonCache = { at: 0, key: '', value: null, inflight: null };
 
 async function buildDragon(query) {
@@ -873,7 +892,8 @@ async function buildDragon(query) {
     dataSourceNote: g.metaNote + '；实时溢价快照时点 ' + (quoteTick || '—') + '；指数：腾讯证券；题材理解补充：新浪财经概念 / 行业板块成分映射（' + topBoards.length + ' 个板块）与涨停股名称字面聚类；严重异动预测 = 日K累计涨幅（' + risk.summary.klineOk + '/' + risk.summary.klineTotal + ' 只可用）+ 个股公告风险词（' + annItems.length + ' 条）。',
     disclaimer: DISCLAIMER
   };
-  return { meta, ...g };
+  const edgeStats = await getEdgeStats();
+  return { meta, ...g, edgeStats };
 }
 
 async function getDragon(query, force) {
@@ -1592,6 +1612,7 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname === '/api/support-reversal') return sendJson(res, await getSupportReversal(q, q.force === '1'));
     if (u.pathname === '/api/backtest') return sendJson(res, await getBacktest(q, q.force === '1'));
     if (u.pathname === '/api/dragon') return sendJson(res, await getDragon(q, q.force === '1'));
+    if (u.pathname === '/api/dragon/edge-stats') return sendJson(res, await getEdgeStats(q.force === '1'));
     if (u.pathname === '/api/dragon/review') return sendJson(res, await getDragonReview(q, q.force === '1'));
     if (u.pathname === '/api/news') return sendJson(res, await getNews(q, q.force === '1'));
     if (u.pathname === '/api/enlightenment') return sendJson(res, await getEnlightenment(q, q.force === '1'));

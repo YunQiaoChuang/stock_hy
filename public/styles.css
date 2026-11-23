@@ -637,6 +637,20 @@ tbody tr.dg-edge-row td{border-top:1px solid var(--edge);border-bottom:1px solid
 tbody tr.dg-edge-row td:first-child{border-left:3px solid var(--edge)}
 tbody tr.dg-edge-row td:last-child{border-right:1px solid var(--edge)}
 tbody tr.dg-edge-row:hover td{background:var(--edge-bg)}
+/* 实时统计：所有「地位 × 一致分歧状态」组合的晋级率矩阵 */
+.dg-edge-meta{font-size:11px;color:var(--muted);margin:2px 0 9px;line-height:1.6}
+.dg-edge-matrix-wrap{overflow-x:auto;margin-bottom:8px}
+.dg-edge-matrix{width:100%;min-width:620px;border-collapse:collapse;table-layout:fixed;font-size:11px}
+.dg-edge-matrix th,.dg-edge-matrix td{border:1px solid var(--line2);padding:5px 6px;text-align:center;line-height:1.5}
+.dg-edge-matrix thead th{background:#f8fafc;color:var(--ink2);font-weight:650}
+.dg-edge-matrix tbody th{background:#fbfcfe;color:var(--ink);font-weight:650;text-align:left;white-space:nowrap}
+.dg-edge-cell b{display:block;font-size:12px;color:var(--ink)}
+.dg-edge-cell .dg-edge-n{display:block;font-size:10px;color:var(--muted)}
+.dg-edge-cell.none{color:var(--muted);background:#fafbfd}
+.dg-edge-cell.small-sample b{color:var(--muted);font-weight:600}
+.dg-edge-cell.marked{font-weight:700}
+.dg-edge-sums{margin-top:9px;font-size:11px;color:var(--ink2);line-height:1.8}
+.dg-edge-sums b{color:var(--ink)}
 .dg-detail{min-width:0}
 .dg-detail-head{padding:13px 16px;margin-bottom:12px}
 .dg-dh-top{display:flex;align-items:center;gap:9px;flex-wrap:wrap}

@@ -168,7 +168,7 @@
     dgHist: null, dgHistDate: null, dgHistOpen: false, dgHistLoading: false, dgHistError: null,
     dgHistSelected: null, dgHistMethodOpen: false,
     dgOpts: { days: 12, showAll: 0, sort: 'score', sortDir: 'desc', role: '全部', limit: 60 },
-    dgOfflineTimer: null,
+    dgOfflineTimer: null, edgeStats: null,
     auction: null, auctionLoading: false, auctionError: null, auctionAt: 0,
     auctionOpts: { days: 10 }, auctionMethodOpen: false,
     ladderDate: null, ladderData: null, ladderDates: [], ladderLoading: false, ladderKind: 'zt',
@@ -391,6 +391,7 @@
       if (j.error) throw new Error(j.error);
       S.prevPrices = pricesOf(S.data);
       S.data = j;
+      if (j.edgeStats) S.edgeStats = j.edgeStats;
       S.lastFilters = describeFilters(f);
       render();
       // 新模块走独立 API：仅在该 tab 可见、筛选变化或超过 60 秒时才重新扫描，避免拖累 15 秒主看板刷新
@@ -2055,43 +2056,94 @@
   /* ═══════════ 明日龙头 · 只做龙头 / 买在分歧卖在一致 ═══════════ */
   const dgDtypeCls = d => ({ '良性分歧': 'red', '一致加速': 'warn', '恶性分歧': 'purple', '分歧偏弱': 'blue', '中性': '' }[d] || '');
   const dgToneCls = t => ({ primary: 'red', warn: 'warn', blue: 'blue', muted: '' }[t] || '');
-  // 历史复盘中晋级率较高的「地位 + 一致」组合；颜色与右上角标记仅按回放日已知字段生成。
-  const DG_EDGE_COMBOS = {
-    '空间板|一致加速': { key: 'space', label: '空间板+一致', rate: '61.5%', n: 13, avg: '+6.77%', win: '84.6%', color: '#d92b2b', bg: '#fdecec' },
-    '累计板龙|一致加速': { key: 'cum', label: '累计板龙+一致', rate: '50.0%', n: 16, avg: '+4.76%', win: '', color: '#6d4bd6', bg: '#f1edfd' },
-    '题材龙|一致加速': { key: 'theme', label: '题材龙+一致', rate: '40.0%', n: 20, avg: '', win: '', color: '#2f6fd0', bg: '#eaf2fd' }
+  // 「地位 + 一致加速」三类组合的颜色 / 文案是 UI 规则；概率一律取服务端实时统计 S.edgeStats
+  // （随主看板 /api/dashboard 下发，10 分钟重算一次），不再写死历史常量。
+  const DG_EDGE_META = {
+    '空间板|一致加速': { key: 'space', label: '空间板+一致', color: '#d92b2b', bg: '#fdecec' },
+    '累计板龙|一致加速': { key: 'cum', label: '累计板龙+一致', color: '#6d4bd6', bg: '#f1edfd' },
+    '题材龙|一致加速': { key: 'theme', label: '题材龙+一致', color: '#2f6fd0', bg: '#eaf2fd' }
+  };
+  const EDGE_ROLES = ['空间板', '累计板龙', '题材龙', '卡位股', '容量中军', '孤立涨停', '后排/补涨'];
+  const EDGE_DTYPES = ['一致加速', '良性分歧', '分歧偏弱', '恶性分歧', '中性'];
+  const edgeStatOf = key => (S.edgeStats && S.edgeStats.combos && S.edgeStats.combos[key]) || null;
+  const edgeRateText = key => {
+    const c = edgeStatOf(key);
+    return c && c.rate !== null && c.rate !== undefined ? Number(c.rate).toFixed(1) + '%' : '—';
   };
   function dgEdgeOf(x) {
     if (!x || x.dtype !== '一致加速') return null;
-    return DG_EDGE_COMBOS[String(x.role) + '|' + String(x.dtype)] || null;
+    const key = String(x.role) + '|' + String(x.dtype);
+    const meta = DG_EDGE_META[key]; if (!meta) return null;
+    return Object.assign({}, meta, { key, rate: edgeRateText(key), n: (edgeStatOf(key) || {}).n || 0 });
   }
   function dgEdgeStyle(edge) {
     return '--edge:' + edge.color + ';--edge-bg:' + edge.bg;
   }
   function dgEdgeTitle(edge) {
-    return '历史复盘：' + edge.label + ' 晋级率 ' + edge.rate + '（n=' + edge.n + '）' +
-      (edge.avg ? '，均涨 ' + edge.avg : '') + (edge.win ? '，上涨占比 ' + edge.win : '') + '；仅为历史样本，不代表未来收益';
+    const c = edgeStatOf(edge.key), w = S.edgeStats && S.edgeStats.window;
+    return '实时统计：' + edge.label + ' 晋级率 ' + edge.rate +
+      (c ? '（n=' + c.n + '，' + (c.promoted || 0) + ' 次晋级）' : '（统计载入中）') +
+      (w ? ' · 窗口 ' + String(w.from || '') + '~' + String(w.to || '') : '') +
+      '；仅为历史样本，不代表未来收益';
   }
   function dgEdgeBadge(x) {
     const edge = dgEdgeOf(x);
     if (!edge) return '';
     return '<span class="dg-edge-inline edge-' + E(edge.key) + '" style="' + dgEdgeStyle(edge) +
-      '" title="' + E(dgEdgeTitle(edge)) + '">★ ' + E(edge.label) + ' ' + E(edge.rate) + '</span>';
+      '" title="' + E(dgEdgeTitle(edge)) + '">★ ' + E(edge.label) + ' <span data-edge-rate>' + E(edge.rate) + '</span></span>';
+  }
+  /** 实时统计卡片：列出所有「地位 × 一致分歧状态」组合的晋级率（无数据时如实提示，不回退固定常量） */
+  function edgeLegendInner(compact) {
+    const st = S.edgeStats;
+    const head = '<div class="dg-card-head"><h4>历史优势组合 · 彩色边框标记</h4>' +
+      '<span class="small muted">概率由服务端按当前可回溯窗口实时统计</span></div>';
+    if (!st || !st.available || !st.combos) {
+      const pending = '<div class="small muted">正在统计各组合晋级率…（数据随主看板刷新下发）</div>';
+      return compact
+        ? '<div class="dg-h5" style="margin-top:11px">历史优势组合 · 彩色边框标记</div>' + pending
+        : '<div class="card pad dg-card dg-edge-legend">' + head + pending + '</div>';
+    }
+    const w = st.window || {}, minN = Number(st.minSample) || 8;
+    const fmtDate = v => String(v || '').replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+    const marks = st.marks || Object.keys(DG_EDGE_META);
+    const roles = (st.byRole || []).map(r => String(r.key));
+    const dtypes = (st.byDtype || []).map(r => String(r.key));
+    const roleOrder = EDGE_ROLES.filter(r => roles.indexOf(r) >= 0).concat(roles.filter(r => EDGE_ROLES.indexOf(r) < 0));
+    const dtypeOrder = EDGE_DTYPES.filter(d => dtypes.indexOf(d) >= 0).concat(dtypes.filter(d => EDGE_DTYPES.indexOf(d) < 0));
+    let html = '<div class="dg-edge-meta">实时统计 · 窗口 ' + E(fmtDate(w.from)) + ' ~ ' + E(fmtDate(w.to)) +
+      ' · ' + (w.countedDays || 0) + ' 个有效交易日 · 共 ' + ((st.total || {}).n || 0) + ' 个候选样本 · 全样本晋级率 ' +
+      E((st.total && st.total.rate !== null && st.total.rate !== undefined) ? st.total.rate + '%' : '—') +
+      ' · 每 10 分钟重算</div>';
+    html += '<div class="dg-edge-matrix-wrap"><table class="dg-edge-matrix"><thead><tr><th>地位 ＼ 状态</th>' +
+      dtypeOrder.map(t => '<th>' + E(t) + '</th>').join('') + '</tr></thead><tbody>';
+    roleOrder.forEach(role => {
+      html += '<tr><th>' + E(role) + '</th>';
+      dtypeOrder.forEach(dtype => {
+        const key = role + '|' + dtype;
+        const c = st.combos[key], marked = marks.indexOf(key) >= 0, meta = DG_EDGE_META[key];
+        if (!c || !c.n) { html += '<td class="dg-edge-cell none">—</td>'; return; }
+        const alpha = Math.max(0, Math.min(0.22, (Number(c.rate) || 0) / 100 * 0.32));
+        const style = 'background:rgba(47,111,208,' + alpha.toFixed(3) + ')' + (marked && meta ? ';border:2px solid ' + meta.color : '');
+        const tip = role + ' + ' + dtype + '：晋级 ' + c.promoted + '/' + c.n + ' = ' + c.rate + '%' +
+          (c.smallSample ? '（样本不足 ' + minN + '，仅供参考）' : '');
+        html += '<td class="dg-edge-cell' + (marked ? ' marked' : '') + (c.smallSample ? ' small-sample' : '') +
+          '" style="' + style + '" title="' + E(tip) + '"><b>' + Number(c.rate).toFixed(1) + '%</b>' +
+          '<span class="dg-edge-n">n=' + c.n + '</span></td>';
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+    const line = arr => (arr || []).map(r => E(r.key) + ' ' + E(r.rate === null ? '—' : r.rate + '%') + ' (n=' + r.n + ')').join(' · ');
+    html += '<div class="dg-edge-sums"><div><b>按地位：</b>' + line(st.byRole) + '</div><div><b>按状态：</b>' + line(st.byDtype) + '</div></div>';
+    html += '<div class="note-box">' + E(st.method || '') + '<br>' + E(st.note || '') +
+      '<br>彩色边框仅标记「一致加速 + 空间板 / 累计板龙 / 题材龙」三类组合；角标与本表数值均取自本次实时统计。' +
+      '样本数 &lt; ' + minN + ' 的组合已淡化显示，不作判断依据。</div>';
+    return compact
+      ? '<div class="dg-h5" style="margin-top:11px">历史优势组合 · 彩色边框标记</div>' + html
+      : '<div class="card pad dg-card dg-edge-legend">' + head + html + '</div>';
   }
   function dgEdgeLegendCard(compact) {
-    const items = Object.keys(DG_EDGE_COMBOS).map(k => {
-      const e = DG_EDGE_COMBOS[k];
-      const detail = '晋级率 <b>' + E(e.rate) + '</b>（n=' + E(e.n) + '）' +
-        (e.avg ? ' · 均涨 <b>' + E(e.avg) + '</b>' : '') + (e.win ? ' · 上涨占比 <b>' + E(e.win) + '</b>' : '');
-      return '<div class="dg-edge-legend-item edge-' + E(e.key) + '" style="' + dgEdgeStyle(e) + '">' +
-        '<span class="dg-edge-swatch"></span><b>' + E(e.label) + '</b><span class="small muted">' + detail + '</span></div>';
-    }).join('');
-    const grid = '<div class="dg-edge-legend-grid' + (compact ? ' compact' : '') + '">' + items + '</div>';
-    const note = '<div class="note-box">样本来自 ' + E('2026-10-28 ~ 2026-11-16') +
-      ' 的历史回放，同一标的跨日重复出现、样本量小，且晋级率不等于收益率或可交易胜率；彩色边框只是复盘识别标记，不构成买卖信号。</div>';
-    if (compact) return '<div class="dg-h5" style="margin-top:11px">历史优势组合 · 彩色边框标记</div>' + grid + note;
-    return '<div class="card pad dg-card dg-edge-legend"><div class="dg-card-head"><h4>历史优势组合 · 彩色边框标记</h4>' +
-      '<span class="small muted">仅按当日「地位 + 一致加速」标记，不使用次日数据</span></div>' + grid + note + '</div>';
+    return '<div class="dg-edge-legend-root">' + edgeLegendInner(!!compact) + '</div>';
   }
   /** 首板龙头种子：最近回测分档概率图例，挂在连板天梯下方 */
   function seedLegendCard(s, isHistory) {
@@ -2713,6 +2765,7 @@
     try {
       const j = await fetchDragonJson(q);
       S.dg = j; S.dgAt = Date.now(); S.dgError = null; S.dgFilters = S.lastFilters;
+      if (j.edgeStats) S.edgeStats = j.edgeStats;
       const list = j.list || [];
       if (!list.some(x => x.code === S.dgSelected)) S.dgSelected = list.length ? list[0].code : null;
       renderDragon();
