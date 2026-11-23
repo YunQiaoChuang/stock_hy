@@ -667,25 +667,32 @@ async function buildBacktest(query) {
 /* ── 支撑位反转：回调 + 主力资金首次翻红 + 十字星/小阳线（回测 + 当日信号） ── */
 // 按完整筛选条件缓存最近 8 份结果：来回切换板块 / 市值时不必重复拉几百只个股的日K与资金流
 const supportRevCache = { values: new Map(), inflight: null, inflightKey: '' };
+const srNumOrNull = v => {
+  if (v === '' || v === undefined || v === null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+// 主接口与样本分页接口必须共用同一套缓存键，避免拿错筛选条件下的样本
+function supportRevKey(query) {
+  return JSON.stringify({
+    scan: query.scan || '', window: query.window || '', minDraw: query.minDraw || '',
+    bandPct: query.bandPct || '', smallYang: query.smallYang || '', lookback: query.lookback || '',
+    board: String(query.board || '全部').trim() || '全部',
+    srBoard: String(query.srBoard || '全部').trim() || '全部',
+    capMin: srNumOrNull(query.capMin), capMax: srNumOrNull(query.capMax)
+  });
+}
 async function getSupportReversal(query, force) {
   // 全局筛选（市场板块 / 流通市值）与模块内「板块」下拉共同约束候选池，
   // 必须参与缓存 key，否则切换筛选会一直拿到上一次的回测结果。
-  const numOrNull = v => {
-    if (v === '' || v === undefined || v === null) return null;
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  };
+  const numOrNull = srNumOrNull;
   const boardRaw = String(query.board || '全部').trim() || '全部';
   const globalBoards = boardRaw !== '全部' && boardRaw !== 'all'
     ? boardRaw.split(',').map(s => s.trim()).filter(Boolean) : null;
   const srBoard = String(query.srBoard || '全部').trim() || '全部';
   const localBoard = srBoard !== '全部' && srBoard !== 'all' ? srBoard : null;
   const capMin = numOrNull(query.capMin), capMax = numOrNull(query.capMax);
-  const key = JSON.stringify({
-    scan: query.scan || '', window: query.window || '', minDraw: query.minDraw || '',
-    bandPct: query.bandPct || '', smallYang: query.smallYang || '', lookback: query.lookback || '',
-    board: boardRaw, srBoard, capMin, capMax
-  });
+  const key = supportRevKey(query);
   const cached = supportRevCache.values.get(key);
   if (!force && cached && Date.now() - cached.at < 600000) return cached.value;
   if (supportRevCache.inflight && supportRevCache.inflightKey === key) return supportRevCache.inflight;
@@ -768,19 +775,32 @@ async function getSupportReversal(query, force) {
         fundCaliber: caliber,
         klineSource: '腾讯证券前复权日K（失败降级新浪不复权并逐只标注）'
       });
+      // 全量历史信号只保留表格需要的字段，留在服务端缓存里按需分页；主响应仍只带前 120 条
+      const allSamples = (result.samples || []).map(s => ({
+        date: s.date, code: s.code, name: s.name, board: s.board || null,
+        floatCap: s.floatCap === undefined ? null : s.floatCap,
+        shape: s.shape, drawdown: s.drawdown, pct: s.pct, main: s.main,
+        pending: !!s.pending,
+        next: s.next ? {
+          limitUp: !!s.next.limitUp, pct: s.next.pct, retOC: s.next.retOC, retCC: s.next.retCC
+        } : null
+      }));
+      result.samples = allSamples.slice(0, 120);
+      result.sampleTotal = allSamples.length;
       const meta = {
         scannedCandidates: cand.length, usedCodes: inputs.length, noKline, noFund,
         scan, elapsedMs: Date.now() - t0,
         fundSources: srcList.map(([source, n]) => ({ source, n })), fundCaliber: caliber,
         filters: { board: boardRaw, boards: globalBoards, srBoard, localBoard, capMin, capMax },
         universeCount: universeAll.length, eligibleCount: eligible.length, histAdded,
+        sampleTotal: allSamples.length,
         filterDesc: filterDesc.join(' · '),
         candidateNote: '候选=非ST A股按成交额降序前 ' + scan + ' 只 + 近10日涨停回踩池并集；成交额过滤 >2000万、股价>2元；当前生效筛选：' +
           filterDesc.join(' · ') + '（命中 ' + eligible.length + ' 只，历史池补入 ' + histAdded + ' 只）。' +
           '全市场盲扫请求量过大，故聚焦活跃股；筛选作用于候选池，KPI、分档、样本与最新信号股均基于筛选后的真实日K与资金流重算。',
         asOf: result.asOf, disclaimer: DISCLAIMER
       };
-      const value = { ok: true, meta, result };
+      const value = { ok: true, meta, result, allSamples };
       supportRevCache.values.set(key, { at: Date.now(), value });
       while (supportRevCache.values.size > 8) supportRevCache.values.delete(supportRevCache.values.keys().next().value);
       supportRevCache.inflight = null; supportRevCache.inflightKey = '';
@@ -792,6 +812,29 @@ async function getSupportReversal(query, force) {
   })();
   supportRevCache.inflight = job;
   return job;
+}
+
+/** 历史信号样本分页：与主接口共用筛选条件，按信号日倒序逐页取更早的数据 */
+async function getSupportReversalSamples(query) {
+  const key = supportRevKey(query);
+  let entry = supportRevCache.values.get(key);
+  if (!entry || Date.now() - entry.at >= 600000) {
+    try {
+      await getSupportReversal(query, false);
+      entry = supportRevCache.values.get(key);
+    } catch (e) {
+      return { ok: false, error: '回测尚未完成：' + String(e && e.message || e) };
+    }
+  }
+  if (!entry) return { ok: false, error: '当前筛选的回测结果尚未生成，请点「重新回测」后重试' };
+  const all = entry.value.allSamples || [];
+  const offset = Math.max(0, Math.floor(Number(query.offset) || 0));
+  const limit = Math.max(10, Math.min(200, Math.floor(Number(query.limit) || 80)));
+  return {
+    ok: true, total: all.length, offset, limit,
+    rows: all.slice(offset, offset + limit),
+    asOf: entry.value.result && entry.value.result.asOf
+  };
 }
 
 async function getBacktest(query, force) {
@@ -1663,7 +1706,11 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (u.pathname === '/api/pullback') return sendJson(res, await getPullback(q, q.force === '1'));
-    if (u.pathname === '/api/support-reversal') return sendJson(res, await getSupportReversal(q, q.force === '1'));
+    if (u.pathname === '/api/support-reversal') {
+      const v = await getSupportReversal(q, q.force === '1');
+      return sendJson(res, { ok: v.ok, meta: v.meta, result: v.result });
+    }
+    if (u.pathname === '/api/support-reversal/samples') return sendJson(res, await getSupportReversalSamples(q));
     if (u.pathname === '/api/backtest') return sendJson(res, await getBacktest(q, q.force === '1'));
     if (u.pathname === '/api/dragon') return sendJson(res, await getDragon(q, q.force === '1'));
     if (u.pathname === '/api/dragon/edge-stats') return sendJson(res, await getEdgeStats(q.force === '1'));

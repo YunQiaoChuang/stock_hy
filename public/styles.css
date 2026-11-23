@@ -513,6 +513,10 @@ ul.tight li{margin-bottom:2px}
 .lv-foot{font-size:10px;color:var(--muted);margin-top:5px;line-height:1.5}
 .lv-onchart{background:#f5faf8}
 .dot-on{color:#0f7b6c;font-size:9px}
+.sr-samples-wrap{max-height:420px;overflow-y:auto;overscroll-behavior:contain}
+.sr-samples-wrap table{min-width:700px}
+.sr-samples-wrap thead th{position:sticky;top:0;z-index:2;background:#f7f9fc}
+.sr-sample-hint{margin-top:8px;line-height:1.6}
 .pb-lines .tbl-wrap{max-height:320px;overflow-y:auto}
 .pb-lines tbody td{white-space:normal;vertical-align:top}
 .pb-lines td.small{font-size:10.5px;color:var(--ink2);line-height:1.55;min-width:260px}

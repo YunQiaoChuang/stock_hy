@@ -162,6 +162,7 @@
     support: null, supportLoading: false, supportError: null, supportAt: 0, supportMethodOpen: false,
     supportOpts: { scan: 600, window: 60, minDraw: 4, bandPct: 3, smallYang: 3, lookback: 6, shape: '全部', board: '全部' },
     srFilters: '', srPending: false, srLoadingNote: '',
+    srSamples: { key: '', rows: [], offset: 0, total: null, loading: false, done: false, error: '' },
     bt: null, btLoading: false, btError: null, btOpen: false,
     btDate: 'all', btWindow: 5, btMethodOpen: false,
     dg: null, dgLoading: false, dgError: null, dgAt: 0, dgSelected: null, dgFilters: '',
@@ -3112,6 +3113,92 @@
     if (m && m.usedCodes !== undefined && m.usedCodes !== null) out.push('有效样本池 ' + m.usedCodes + ' 只');
     return out.join(' · ');
   }
+  // 主回测与样本分页共用同一组参数，保证两次请求命中同一份服务端缓存
+  function srQueryParams() {
+    const o = S.supportOpts, f = collectFilters();
+    const q = new URLSearchParams({
+      scan: String(o.scan), window: String(o.window), minDraw: String(o.minDraw),
+      bandPct: String(o.bandPct), smallYang: String(o.smallYang), lookback: String(o.lookback)
+    });
+    ['board', 'capMin', 'capMax'].forEach(k => {
+      if (f[k] !== '' && f[k] !== undefined && f[k] !== null) q.set(k, f[k]);
+    });
+    q.set('srBoard', o.board || '全部');
+    return q;
+  }
+  const SR_SAMPLE_PAGE = 80;
+  function srSampleKey() { return srQueryParams().toString(); }
+  function srSampleRow(s) {
+    const n = s.next || {};
+    return '<tr><td>' + E(fmtDate(s.date)) + '</td>' +
+      '<td><span class="stock-link" data-stock-code="' + E(s.code) + '">' + E(s.name) + '</span> <span class="em-code">' + E(s.code) + '</span></td>' +
+      '<td>' + E(s.shape === 'doji' ? '十字星' : '小阳线') + '</td>' +
+      '<td class="down">' + E(s.drawdown) + '%</td><td class="up">' + E((s.main / 1e8).toFixed(2)) + '亿</td>' +
+      (s.pending || !s.next ? '<td colspan="3" class="muted">pending（待次日）</td>' :
+        '<td class="' + (n.limitUp ? 'up' : '') + '">' + (n.limitUp ? '涨停 +' + E(n.pct) + '%' : E(n.pct) + '%') + '</td>' +
+        '<td class="' + (n.retOC > 0 ? 'up' : n.retOC < 0 ? 'down' : '') + '">' + srPct(n.retOC, '%') + '</td>' +
+        '<td class="' + (n.retCC > 0 ? 'up' : n.retCC < 0 ? 'down' : '') + '">' + srPct(n.retCC, '%') + '</td>') +
+      '</tr>';
+  }
+  function srSampleStatus() {
+    const st = S.srSamples;
+    const total = st.total === null ? '…' : st.total;
+    const tail = st.loading ? '正在加载更早数据…'
+      : st.error ? '加载失败：' + st.error + '（可点下方按钮重试）'
+        : st.done ? '已到最早一条' : '向下滚动继续查看更早数据';
+    return '已载入 ' + st.rows.length + ' / ' + total + ' 条历史信号 · ' + tail;
+  }
+  function renderSrSampleRows() {
+    const body = $('srSamplesBody'), wrap = $('srSamplesScroll'), st = S.srSamples;
+    if (!body || !wrap) return;
+    const top = wrap.scrollTop;
+    body.innerHTML = st.rows.length ? st.rows.map(srSampleRow).join('')
+      : '<tr><td colspan="8" class="empty">' + (st.loading ? '正在载入历史信号样本…' : st.error ? '样本载入失败' : '无信号样本') + '</td></tr>';
+    wrap.scrollTop = top;
+    const c = $('srSampleCount'); if (c) c.textContent = '共 ' + (st.total === null ? '…' : st.total) + ' 条';
+    const h = $('srSampleHint'); if (h) h.textContent = srSampleStatus();
+    const more = $('srSampleMore');
+    if (more) more.style.display = (!st.done && !st.loading && (st.rows.length || st.error)) ? '' : 'none';
+  }
+  async function loadSrSamples(reset) {
+    const st = S.srSamples, key = st.key;
+    if (reset) { st.rows = []; st.offset = 0; st.total = null; st.done = false; st.error = ''; }
+    if (st.loading || st.done || !$('srSamplesBody')) return;
+    st.loading = true; st.error = '';
+    renderSrSampleRows();
+    const q = srQueryParams();
+    q.set('offset', String(st.offset)); q.set('limit', String(SR_SAMPLE_PAGE));
+    try {
+      const resp = await fetch('/api/support-reversal/samples?' + q.toString(), { cache: 'no-store' });
+      const j = await resp.json();
+      if (!resp.ok || !j.ok) throw new Error(j.error || ('HTTP ' + resp.status));
+      if (S.srSamples.key !== key) return; // 筛选已变化，丢弃过期响应
+      st.rows = st.rows.concat(j.rows || []);
+      st.offset += (j.rows || []).length;
+      st.total = j.total;
+      st.done = !(j.rows || []).length || st.offset >= (j.total || 0);
+    } catch (e) {
+      if (S.srSamples.key === key) st.error = e.message;
+    } finally {
+      st.loading = false;
+      if (S.srSamples.key === key) renderSrSampleRows();
+    }
+  }
+  function bindSrSamples() {
+    const wrap = $('srSamplesScroll');
+    if (!wrap) return;
+    const key = srSampleKey();
+    if (S.srSamples.key !== key) {
+      S.srSamples = { key, rows: [], offset: 0, total: null, loading: false, done: false, error: '' };
+    }
+    renderSrSampleRows();
+    wrap.onscroll = () => {
+      if (wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 160) loadSrSamples(false);
+    };
+    const more = $('srSampleMore');
+    if (more) more.onclick = () => loadSrSamples(false);
+    if (!S.srSamples.rows.length && !S.srSamples.loading) loadSrSamples(false);
+  }
   function renderSupportReversal() {
     const j = S.support;
     if (!j) return;
@@ -3175,18 +3262,16 @@
         '<span>预期开→收 ' + srPct(x.expOC, '%') + '</span></div>' +
         '<div class="small muted" style="margin-top:5px">' + E((x.basis || []).join(' · ')) + '</div>' +
         '</div>').join('') + '</div>' : '<div class="empty">当前筛选下无信号股，可调高扫描数或放宽回撤阈值</div>') + '</div>';
-    // 最近样本明细
-    const samples = (r.samples || []).slice(0, 40);
-    const sampleCard = '<div class="card pad" style="margin-top:12px"><div class="sm-block-head"><h4>最近信号样本（含次日结果）</h4>' +
-      '<span class="small muted">pending=最新信号日尚无次日数据</span></div>' +
-      (samples.length ? '<div class="tbl-wrap"><table><thead><tr><th>信号日</th><th>个股</th><th>形态</th><th>回撤</th><th>主力净额</th><th>次日涨停</th><th>开→收</th><th>收→收</th></tr></thead><tbody>' +
-        samples.map(s => '<tr><td>' + E(fmtDate(s.date)) + '</td><td><span class="stock-link" data-stock-code="' + E(s.code) + '">' + E(s.name) + '</span> <span class="em-code">' + E(s.code) + '</span></td>' +
-          '<td>' + E(s.shape === 'doji' ? '十字星' : '小阳线') + '</td><td class="down">' + E(s.drawdown) + '%</td><td class="up">' + E((s.main / 1e8).toFixed(2)) + '亿</td>' +
-          (s.pending ? '<td colspan="3" class="muted">pending（待次日）</td>' :
-            '<td class="' + (s.next.limitUp ? 'up' : '') + '">' + (s.next.limitUp ? '涨停 +' + E(s.next.pct) + '%' : E(s.next.pct) + '%') + '</td>' +
-            '<td class="' + (s.next.retOC > 0 ? 'up' : s.next.retOC < 0 ? 'down' : '') + '">' + srPct(s.next.retOC, '%') + '</td>' +
-            '<td class="' + (s.next.retCC > 0 ? 'up' : s.next.retCC < 0 ? 'down' : '') + '">' + srPct(s.next.retCC, '%') + '</td>') + '</tr>').join('') +
-        '</tbody></table></div>' : '<div class="empty">无信号样本</div>') + '</div>';
+    // 最近样本明细：固定高度滚动容器 + 触底自动加载更早的历史信号
+    const sampleCard = '<div class="card pad" style="margin-top:12px"><div class="sm-block-head">' +
+      '<h4>最近信号样本（含次日结果）</h4><span class="small muted" id="srSampleCount">载入中…</span></div>' +
+      '<div class="small muted" style="margin:2px 0 8px">pending=最新信号日尚无次日数据；按信号日由近到远排列，可向下滚动查看更早记录</div>' +
+      '<div class="tbl-wrap sr-samples-wrap" id="srSamplesScroll"><table><thead><tr>' +
+      '<th>信号日</th><th>个股</th><th>形态</th><th>回撤</th><th>主力净额</th><th>次日涨停</th><th>开→收</th><th>收→收</th>' +
+      '</tr></thead><tbody id="srSamplesBody"></tbody></table></div>' +
+      '<div class="small muted sr-sample-hint" id="srSampleHint">向下滚动可继续查看更早的历史信号</div>' +
+      '<button class="btn btn-ghost btn-sm" id="srSampleMore" style="display:none;margin-top:8px">加载更早的样本</button>' +
+      '</div>';
     $('pane-support').innerHTML = head + kpi + tiers + listCard + sampleCard + srMethodCard() +
       '<div class="disclaimer" style="margin-top:14px"><strong>免责声明</strong>：' + E(m.disclaimer || '') + '</div>';
     // 事件
@@ -3197,6 +3282,7 @@
     $('srBoard').onchange = e => { S.supportOpts.board = e.target.value; loadSupportReversal(true); };
     $('srRefresh').onclick = () => loadSupportReversal(true);
     const mt = $('srMethodToggle'); if (mt) mt.onclick = () => { S.supportMethodOpen = !S.supportMethodOpen; renderSupportReversal(); };
+    bindSrSamples();
   }
   async function loadSupportReversal(force) {
     // 长耗时扫描期间用户又改了筛选：登记待办，等当前扫描结束后按最新条件补跑一次
@@ -3207,14 +3293,7 @@
     S.srFilters = sig;
     if (!S.support) $('pane-support').innerHTML = '<div class="card empty">正在按当前板块/市值条件筛选「回调到位 + 主力资金首次翻红 + 十字星/小阳线」个股并回测次日表现…<br><span class="small muted">首次需拉取数百只个股的日K与资金流，约 30~90 秒，请耐心等待。</span></div>';
     else renderSupportReversal();
-    const o = S.supportOpts;
-    const f = collectFilters();
-    const q = new URLSearchParams({ scan: String(o.scan), window: String(o.window), minDraw: String(o.minDraw), bandPct: String(o.bandPct), smallYang: String(o.smallYang), lookback: String(o.lookback) });
-    // 全局「市场板块 / 流通市值」与模块内「板块」一起下发，服务端据此裁剪候选池
-    ['board', 'capMin', 'capMax'].forEach(k => {
-      if (f[k] !== '' && f[k] !== undefined && f[k] !== null) q.set(k, f[k]);
-    });
-    q.set('srBoard', o.board || '全部');
+    const q = srQueryParams();
     if (force) q.set('force', '1');
     let failed = false;
     try {
