@@ -161,6 +161,7 @@
     pullFilters: '', pullError: null, pullMethodOpen: false, pullOfflineTimer: null, pullDays: 8,
     support: null, supportLoading: false, supportError: null, supportAt: 0, supportMethodOpen: false,
     supportOpts: { scan: 600, window: 60, minDraw: 4, bandPct: 3, smallYang: 3, lookback: 6, shape: '全部', board: '全部' },
+    srFilters: '', srPending: false, srLoadingNote: '',
     bt: null, btLoading: false, btError: null, btOpen: false,
     btDate: 'all', btWindow: 5, btMethodOpen: false,
     dg: null, dgLoading: false, dgError: null, dgAt: 0, dgSelected: null, dgFilters: '',
@@ -208,11 +209,13 @@
         else S.boards.add(val);
       }
       [...$('boardChips').children].forEach(c => c.classList.toggle('active', S.boards.has(c.dataset.board)));
+      if (S.tab === 'support' && S.srFilters !== srFilterSignature()) loadSupportReversal(false);
     };
     $('capQuick').onclick = e => {
       const b = e.target.closest('button'); if (!b) return;
       $('capMin').value = b.dataset.min || ''; $('capMax').value = b.dataset.max || '';
       [...$('capQuick').children].forEach(c => c.classList.toggle('active', c === b));
+      if (S.tab === 'support' && S.srFilters !== srFilterSignature()) loadSupportReversal(false);
     };
     $('tabs').onclick = e => {
       const t = e.target.closest('.tab'); if (!t) return;
@@ -229,6 +232,11 @@
     });
     ['capMin', 'capMax', 'pctMin', 'pctMax', 'turnoverMin', 'turnoverMax', 'keyword'].forEach(id => {
       $(id).addEventListener('keydown', e => { if (e.key === 'Enter') refresh(true); });
+    });
+    ['capMin', 'capMax'].forEach(id => {
+      $(id).addEventListener('change', () => {
+        if (S.tab === 'support' && S.srFilters !== srFilterSignature()) loadSupportReversal(false);
+      });
     });
     // 全局股票名点击委托：打开个股K线弹窗
     document.addEventListener('click', e => {
@@ -399,6 +407,8 @@
         (S.pullFilters !== S.lastFilters || Date.now() - S.pullAt > 60000)) loadPullback(false);
       if (S.tab === 'dragon' && Date.now() - S.dgAt > 12000 &&
         (S.dgFilters !== S.lastFilters || Date.now() - S.dgAt > 60000)) loadDragon(false);
+      // 支撑位反转：板块 / 市值筛选作用于服务端候选池，条件变了必须重新回测
+      if (S.tab === 'support' && S.srFilters !== srFilterSignature(f)) loadSupportReversal(false);
       if (S.watch.list.length) refreshWatchQuotes(false);
       $('loading').classList.add('hide');
       $('alertBox').style.display = 'none';
@@ -474,7 +484,8 @@
     ['watchlist', 'review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'support', 'dragon', 'auction', 'predict', 'enlighten'].forEach(k => $('pane-' + k).classList.toggle('active', k === t));
     if (t === 'watchlist') { renderWatchlist(); refreshWatchQuotes(true); }
     if (t === 'pullback' && !S.pull && !S.pullLoading) loadPullback(false);
-    if (t === 'support' && !S.support && !S.supportLoading) loadSupportReversal(false);
+    if (t === 'support' && !S.supportLoading &&
+      (!S.support || S.srFilters !== srFilterSignature())) loadSupportReversal(false);
     if (t === 'dragon') {
       const histParam = new URLSearchParams(location.search).get('hist');
       if (histParam && /^\d{8}$/.test(histParam)) {
@@ -3084,6 +3095,23 @@
       '</div></div>';
   }
   const srPct = (v, suf) => v === null || v === undefined ? '—' : (v > 0 ? '+' : '') + N(v) + (suf || '');
+  // 影响服务端候选池的筛选签名（其余全局筛选项与该模块无关，不应触发长耗时回测）
+  function srFilterSignature(f) {
+    const x = f || collectFilters();
+    return [x.board || '全部', x.capMin || '', x.capMax || '', S.supportOpts.board || '全部'].join('|');
+  }
+  function srAppliedFilters(m) {
+    const f = (m && m.filters) || {};
+    const out = ['市场板块=' + (f.boards && f.boards.length ? f.boards.join('/') : (f.board || '全部'))];
+    if (f.localBoard) out.push('模块板块=' + f.localBoard);
+    if ((f.capMin !== null && f.capMin !== undefined) || (f.capMax !== null && f.capMax !== undefined)) {
+      out.push('流通市值=' + (f.capMin === null || f.capMin === undefined ? '0' : f.capMin) + '~' +
+        (f.capMax === null || f.capMax === undefined ? '∞' : f.capMax) + '亿');
+    }
+    if (m && m.eligibleCount !== undefined && m.eligibleCount !== null) out.push('命中候选 ' + m.eligibleCount + ' 只');
+    if (m && m.usedCodes !== undefined && m.usedCodes !== null) out.push('有效样本池 ' + m.usedCodes + ' 只');
+    return out.join(' · ');
+  }
   function renderSupportReversal() {
     const j = S.support;
     if (!j) return;
@@ -3105,8 +3133,10 @@
       '<label>形态 <select class="sel" id="srShape">' + ['全部', '十字星', '小阳线'].map(v => '<option value="' + v + '"' + (o.shape === v ? ' selected' : '') + '>' + v + '</option>').join('') + '</select></label>' +
       '<label>板块 <select class="sel" id="srBoard">' + ['全部', '主板', '创业板', '科创板'].map(v => '<option value="' + v + '"' + (o.board === v ? ' selected' : '') + '>' + v + '</option>').join('') + '</select></label>' +
       '<button class="btn btn-primary" id="srRefresh">重新回测</button>' +
-      '<span class="small muted">首次扫描约需 ' + (o.scan >= 900 ? '60~90' : '30~60') + ' 秒，结果缓存 10 分钟</span></div>' +
-      '<div class="small muted" style="margin-top:8px">候选口径：' + E(m.candidateNote || '') + '</div></div>';
+      '<span class="small muted">首次扫描约需 ' + (o.scan >= 900 ? '60~90' : '30~60') + ' 秒，结果缓存 10 分钟；改板块/市值会按新条件重算</span></div>' +
+      '<div class="small" style="margin-top:8px"><b>已生效筛选</b>：' + E(srAppliedFilters(m)) +
+      (S.srLoadingNote ? ' · <b>' + E(S.srLoadingNote) + '</b>' : '') + '</div>' +
+      '<div class="small muted" style="margin-top:5px">候选口径：' + E(m.candidateNote || '') + '</div></div>';
     // KPI 概览
     const kpi = '<div class="card pad" style="margin-top:12px"><div class="sr-kpis">' +
       '<div class="pb-kpi"><span>有效样本 / 信号</span><b>' + E(r.counted) + ' <span class="small muted">/ ' + E(r.signalCount) + '</span></b></div>' +
@@ -3141,6 +3171,7 @@
         '<div class="pb-item-meta"><span>收盘 <b>' + N(x.close) + '</b></span><span>当日 ' + srPct(x.pct, '%') + '</span>' +
         '<span>距高点回撤 <b class="down">' + E(x.drawdown) + '%</b></span><span>支撑参考 ' + N(x.support) + '</span>' +
         '<span>主力净额 <b class="up">' + E(x.mainYi) + '亿</b>（前 ' + E((x.prevMain / 1e8).toFixed(2)) + '亿）</span>' +
+        '<span>流通市值 ' + E(x.floatCap === null || x.floatCap === undefined ? '—' : x.floatCap + '亿') + '</span>' +
         '<span>预期开→收 ' + srPct(x.expOC, '%') + '</span></div>' +
         '<div class="small muted" style="margin-top:5px">' + E((x.basis || []).join(' · ')) + '</div>' +
         '</div>').join('') + '</div>' : '<div class="empty">当前筛选下无信号股，可调高扫描数或放宽回撤阈值</div>') + '</div>';
@@ -3163,32 +3194,55 @@
     $('srWindow').onchange = e => { S.supportOpts.window = Number(e.target.value); loadSupportReversal(true); };
     $('srDraw').onchange = e => { S.supportOpts.minDraw = Number(e.target.value); loadSupportReversal(true); };
     $('srShape').onchange = e => { S.supportOpts.shape = e.target.value; renderSupportReversal(); };
-    $('srBoard').onchange = e => { S.supportOpts.board = e.target.value; renderSupportReversal(); };
+    $('srBoard').onchange = e => { S.supportOpts.board = e.target.value; loadSupportReversal(true); };
     $('srRefresh').onclick = () => loadSupportReversal(true);
     const mt = $('srMethodToggle'); if (mt) mt.onclick = () => { S.supportMethodOpen = !S.supportMethodOpen; renderSupportReversal(); };
   }
   async function loadSupportReversal(force) {
-    if (S.supportLoading) return;
+    // 长耗时扫描期间用户又改了筛选：登记待办，等当前扫描结束后按最新条件补跑一次
+    if (S.supportLoading) { S.srPending = true; return; }
     S.supportLoading = true;
-    if (!S.support) $('pane-support').innerHTML = '<div class="card empty">正在全市场筛选「回调到位 + 主力资金首次翻红 + 十字星/小阳线」个股并回测次日表现…<br><span class="small muted">首次需拉取数百只个股的日K与资金流，约 30~90 秒，请耐心等待。</span></div>';
+    S.srLoadingNote = S.support ? '筛选已变更，正在按新条件重新回测…' : '正在扫描并回测…';
+    const sig = srFilterSignature();
+    S.srFilters = sig;
+    if (!S.support) $('pane-support').innerHTML = '<div class="card empty">正在按当前板块/市值条件筛选「回调到位 + 主力资金首次翻红 + 十字星/小阳线」个股并回测次日表现…<br><span class="small muted">首次需拉取数百只个股的日K与资金流，约 30~90 秒，请耐心等待。</span></div>';
+    else renderSupportReversal();
     const o = S.supportOpts;
+    const f = collectFilters();
     const q = new URLSearchParams({ scan: String(o.scan), window: String(o.window), minDraw: String(o.minDraw), bandPct: String(o.bandPct), smallYang: String(o.smallYang), lookback: String(o.lookback) });
+    // 全局「市场板块 / 流通市值」与模块内「板块」一起下发，服务端据此裁剪候选池
+    ['board', 'capMin', 'capMax'].forEach(k => {
+      if (f[k] !== '' && f[k] !== undefined && f[k] !== null) q.set(k, f[k]);
+    });
+    q.set('srBoard', o.board || '全部');
     if (force) q.set('force', '1');
+    let failed = false;
     try {
       const resp = await fetch('/api/support-reversal?' + q.toString(), { cache: 'no-store' });
       const j = await resp.json();
       if (!resp.ok || j.error) throw new Error(j.error || ('HTTP ' + resp.status));
       S.support = j; S.supportAt = Date.now(); S.supportError = null;
+      S.srFilters = sig; S.srLoadingNote = '';
       renderSupportReversal();
       $('badgeSupport').textContent = ((j.result && j.result.list) || []).length || '—';
     } catch (e) {
+      failed = true;
       S.supportError = e.message;
+      S.srFilters = ''; // 失败后允许主刷新自动重试
       $('badgeSupport').textContent = '—';
       $('pane-support').innerHTML = '<div class="card empty"><b>回测失败：' + E(e.message) + '</b><br>' +
         '<span class="small muted">' + (isConnError(e) ? E(SERVICE_HINT) : '服务端或上游数据源返回异常；系统不会用推测数据填充。') + '</span></div>' +
         '<div class="card pad" style="margin-top:12px"><button class="btn btn-primary" id="srRetry">重新回测</button></div>';
       const rb = $('srRetry'); if (rb) rb.onclick = () => loadSupportReversal(true);
-    } finally { S.supportLoading = false; }
+    } finally {
+      S.supportLoading = false;
+      S.srLoadingNote = '';
+      if (S.srPending) {
+        S.srPending = false;
+        // 失败时不再立即补跑，交给下一次主刷新重试，避免接口异常时连续打满请求
+        if (!failed) setTimeout(() => loadSupportReversal(true), 0);
+      }
+    }
   }
 
   /* ═══════════ 集合竞价 · 多因子首板封板概率（选股视图） ═══════════ */

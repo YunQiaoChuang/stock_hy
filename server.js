@@ -665,15 +665,55 @@ async function buildBacktest(query) {
 }
 
 /* ── 支撑位反转：回调 + 主力资金首次翻红 + 十字星/小阳线（回测 + 当日信号） ── */
-let supportRevCache = { key: '', at: 0, value: null, inflight: null };
+// 按完整筛选条件缓存最近 8 份结果：来回切换板块 / 市值时不必重复拉几百只个股的日K与资金流
+const supportRevCache = { values: new Map(), inflight: null, inflightKey: '' };
 async function getSupportReversal(query, force) {
+  // 全局筛选（市场板块 / 流通市值）与模块内「板块」下拉共同约束候选池，
+  // 必须参与缓存 key，否则切换筛选会一直拿到上一次的回测结果。
+  const numOrNull = v => {
+    if (v === '' || v === undefined || v === null) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const boardRaw = String(query.board || '全部').trim() || '全部';
+  const globalBoards = boardRaw !== '全部' && boardRaw !== 'all'
+    ? boardRaw.split(',').map(s => s.trim()).filter(Boolean) : null;
+  const srBoard = String(query.srBoard || '全部').trim() || '全部';
+  const localBoard = srBoard !== '全部' && srBoard !== 'all' ? srBoard : null;
+  const capMin = numOrNull(query.capMin), capMax = numOrNull(query.capMax);
   const key = JSON.stringify({
     scan: query.scan || '', window: query.window || '', minDraw: query.minDraw || '',
-    bandPct: query.bandPct || '', smallYang: query.smallYang || '', lookback: query.lookback || ''
+    bandPct: query.bandPct || '', smallYang: query.smallYang || '', lookback: query.lookback || '',
+    board: boardRaw, srBoard, capMin, capMax
   });
-  if (!force && supportRevCache.value && supportRevCache.key === key && Date.now() - supportRevCache.at < 600000) return supportRevCache.value;
-  if (supportRevCache.inflight) return supportRevCache.inflight;
-  supportRevCache.inflight = (async () => {
+  const cached = supportRevCache.values.get(key);
+  if (!force && cached && Date.now() - cached.at < 600000) return cached.value;
+  if (supportRevCache.inflight && supportRevCache.inflightKey === key) return supportRevCache.inflight;
+  // 不同筛选条件并发时排队等待，不能把旧条件的扫描结果当成新条件返回
+  if (supportRevCache.inflight) {
+    try { await supportRevCache.inflight; } catch (e) { /* 旧请求失败不影响新条件 */ }
+    return getSupportReversal(query, force);
+  }
+  const boardOk = b => (!globalBoards || globalBoards.includes(b)) && (!localBoard || b === localBoard);
+  const allowBJ = !localBoard && !!globalBoards && globalBoards.includes('北交所');
+  const capOk = x => {
+    if (capMin === null && capMax === null) return true;
+    const cap = Number(x && x.floatCap);
+    if (!Number.isFinite(cap) || cap <= 0) return false;
+    if (capMin !== null && cap < capMin) return false;
+    if (capMax !== null && cap > capMax) return false;
+    return true;
+  };
+  const baseOk = x => !!x && !!x.code && !x.isST && !/ST/i.test(x.name || '') &&
+    (/^(60|00|30|68)/.test(x.code) || (allowBJ && /^(8|4|92)/.test(x.code))) &&
+    Number(x.price) > 2 && Number(x.amount) > 2e7;
+  const filterDesc = ['市场板块=' + (globalBoards ? globalBoards.join('/') : '全部')];
+  if (localBoard) filterDesc.push('模块板块=' + localBoard);
+  if (capMin !== null || capMax !== null) {
+    filterDesc.push('流通市值=' + (capMin === null ? '0' : capMin) + '~' + (capMax === null ? '∞' : capMax) + '亿');
+  }
+  supportRevCache.inflightKey = key;
+  const job = (async () => {
     const t0 = Date.now();
     try {
       const scan = Math.max(80, Math.min(1200, Number(query.scan) || 600));
@@ -681,16 +721,21 @@ async function getSupportReversal(query, force) {
         ds.getUniverse().catch(() => ({ list: [] })),
         ds.getRecentLimitUpPools(10).catch(() => ({ byCode: {} }))
       ]);
-      const uniMap = new Map((universe.list || []).map(x => [x.code, x]));
-      // 候选：全市场非 ST 主板/创业/科创按成交额降序前 scan + 近 10 日涨停回踩池并集
+      const universeAll = universe.list || [];
+      const uniMap = new Map(universeAll.map(x => [x.code, x]));
+      // 候选：先按板块 / 流通市值筛选，再取成交额降序前 scan + 近 10 日涨停回踩池并集。
+      // 两条来源必须走同一套筛选，否则历史涨停池会把被过滤掉的股票重新塞回回测。
       const pool = new Map();
-      (universe.list || [])
-        .filter(x => !x.isST && /^(60|00|30|68)/.test(x.code) && Number(x.price) > 2 && Number(x.amount) > 2e7)
-        .sort((a, b) => (b.amount || 0) - (a.amount || 0))
-        .slice(0, scan)
-        .forEach(x => pool.set(x.code, x));
+      const eligible = universeAll
+        .filter(x => baseOk(x) && boardOk(x.board || ds.boardOf(x.code)) && capOk(x))
+        .sort((a, b) => (b.amount || 0) - (a.amount || 0));
+      eligible.slice(0, scan).forEach(x => pool.set(x.code, x));
+      let histAdded = 0;
       Object.values(hist.byCode || {}).forEach(x => {
-        if (!pool.has(x.code) && uniMap.has(x.code) && !/ST/i.test(x.name || '')) pool.set(x.code, uniMap.get(x.code));
+        if (!x || pool.has(x.code) || /ST/i.test(x.name || '')) return;
+        const u = uniMap.get(x.code);
+        if (!u || !boardOk(u.board || ds.boardOf(u.code)) || !capOk(u)) return;
+        pool.set(u.code, u); histAdded++;
       });
       const cand = [...pool.values()];
       // 低并发拉日K + 资金流历史（东财主力净额，失败降级新浪并如实标注）
@@ -706,6 +751,7 @@ async function getSupportReversal(query, force) {
         if (fd.source) fundSources.set(fd.source, (fundSources.get(fd.source) || 0) + 1);
         inputs.push({
           code: x.code, name: x.name, board: ds.boardOf(x.code), industry: x.industry || '',
+          floatCap: Number.isFinite(Number(x.floatCap)) ? Number(x.floatCap) : null,
           klines: kd.rows, fund: fd.rows
         });
       });
@@ -726,18 +772,26 @@ async function getSupportReversal(query, force) {
         scannedCandidates: cand.length, usedCodes: inputs.length, noKline, noFund,
         scan, elapsedMs: Date.now() - t0,
         fundSources: srcList.map(([source, n]) => ({ source, n })), fundCaliber: caliber,
-        candidateNote: '候选=全市场非ST主板/创业/科创按成交额降序前 ' + scan + ' 只 + 近10日涨停回踩池并集；成交额过滤 >2000万、股价>2元。全市场盲扫请求量过大，故聚焦活跃股；信号与回测均基于这些候选的真实日K与资金流。',
+        filters: { board: boardRaw, boards: globalBoards, srBoard, localBoard, capMin, capMax },
+        universeCount: universeAll.length, eligibleCount: eligible.length, histAdded,
+        filterDesc: filterDesc.join(' · '),
+        candidateNote: '候选=非ST A股按成交额降序前 ' + scan + ' 只 + 近10日涨停回踩池并集；成交额过滤 >2000万、股价>2元；当前生效筛选：' +
+          filterDesc.join(' · ') + '（命中 ' + eligible.length + ' 只，历史池补入 ' + histAdded + ' 只）。' +
+          '全市场盲扫请求量过大，故聚焦活跃股；筛选作用于候选池，KPI、分档、样本与最新信号股均基于筛选后的真实日K与资金流重算。',
         asOf: result.asOf, disclaimer: DISCLAIMER
       };
       const value = { ok: true, meta, result };
-      supportRevCache = { key, at: Date.now(), value, inflight: null };
+      supportRevCache.values.set(key, { at: Date.now(), value });
+      while (supportRevCache.values.size > 8) supportRevCache.values.delete(supportRevCache.values.keys().next().value);
+      supportRevCache.inflight = null; supportRevCache.inflightKey = '';
       return value;
     } catch (e) {
-      supportRevCache = { key, at: 0, value: null, inflight: null };
+      supportRevCache.inflight = null; supportRevCache.inflightKey = '';
       throw e;
     }
   })();
-  return supportRevCache.inflight;
+  supportRevCache.inflight = job;
+  return job;
 }
 
 async function getBacktest(query, force) {
