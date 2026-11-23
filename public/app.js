@@ -465,6 +465,9 @@
 
   function switchTab(t) {
     if (MODULE_IDS.indexOf(t) < 0 || S.visibleModules.indexOf(t) < 0) return;
+    // 切模块时清掉遗留的背景滚动锁；非停靠的全屏弹窗随切换关闭，避免旧状态把新模块锁死
+    if (S.chart && S.chart.open && !S.chart.docked) closeStockChart();
+    syncBodyScrollLock();
     S.tab = t;
     [...$('tabs').children].forEach(c => c.classList.toggle('active', c.dataset.tab === t));
     ['watchlist', 'review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'support', 'dragon', 'auction', 'predict', 'enlighten'].forEach(k => $('pane-' + k).classList.toggle('active', k === t));
@@ -3706,6 +3709,15 @@
   const wlHas = code => !!wlFind(code);
   let smDialogEl = null; // 弹窗 .sm-dialog 节点引用：在遮罩与自选右栏间移动复用
   const getSmDialog = () => smDialogEl || (smDialogEl = document.querySelector('.sm-dialog'));
+  /**
+   * 背景滚动锁的唯一入口：只有「全屏遮罩弹窗」可见时才锁 body。
+   * 停靠在自选股右栏的详情是页面内容的一部分，必须保持整页可滚；
+   * 之前各处直接写 body.style.overflow，停靠态也被锁死且切模块后不会自动恢复。
+   */
+  function syncBodyScrollLock() {
+    const modal = $('stockModal');
+    document.body.style.overflow = (modal && modal.style.display !== 'none') ? 'hidden' : '';
+  }
   /** 把个股详情停靠到自选右栏（docked=true）或移回弹窗遮罩（false） */
   function dockDialog(docked) {
     const dlg = getSmDialog(), modal = $('stockModal'); if (!dlg || !modal) return;
@@ -3714,12 +3726,11 @@
       const host = $('wlDetail');
       if (host) { host.innerHTML = ''; host.appendChild(dlg); }
       modal.style.display = 'none';
-      document.body.style.overflow = '';
     } else {
       if (dlg.parentNode !== modal) modal.appendChild(dlg);
       modal.style.display = 'flex';
-      document.body.style.overflow = 'hidden';
     }
+    syncBodyScrollLock();
   }
   /** renderWatchlist 重建左栏前先摘下已停靠的详情节点，避免连同 innerHTML 一起销毁 */
   function detachDockedDialog() {
@@ -3875,7 +3886,6 @@
     $('smSource').textContent = '载入中…';
     $('smBody').innerHTML = '<div class="empty">正在拉取 ' + E(c) + ' 的分时 / 日K / 周K / 筹码分布…</div>';
     $('smFoot').innerHTML = '';
-    document.body.style.overflow = 'hidden';
     fetch('/api/stock/chart?code=' + encodeURIComponent(c))
       .then(r => r.json())
       .then(j => {
@@ -3968,12 +3978,12 @@
       if (dlg && m && dlg.parentNode !== m) m.appendChild(dlg);
       if (m) m.style.display = 'none';
       const host = $('wlDetail'); if (host) host.innerHTML = '<div class="wl-empty">已从左侧选择 ' + E(S.chart.code || '') + '，点击可再次查看详情</div>';
-      document.body.style.overflow = '';
       S.chart.docked = false;
+      syncBodyScrollLock();
       return;
     }
     const m = $('stockModal'); if (m) m.style.display = 'none';
-    document.body.style.overflow = '';
+    syncBodyScrollLock();
   }
 
   /* K线配色设置面板：5 类颜色 + 恢复默认 + 口径说明 */
@@ -4858,6 +4868,9 @@
     document.addEventListener('mouseup', S.chart.upHandler);
 
     wrap.addEventListener('wheel', e => {
+      // 停靠态详情属于页面内容：普通滚轮交还页面正常下滑，按住 Ctrl / Shift / Alt 才缩放 K 线；
+      // 弹窗态保持原有「滚轮即缩放」交互（背景本就被遮罩锁住）。
+      if (S.chart && S.chart.docked && !(e.ctrlKey || e.shiftKey || e.altKey)) return;
       e.preventDefault();
       const p = smEvtPos(e); if (!p) return;
       const g = S.chart.geom, aF = (p.vx - g.L) / g.PW;
