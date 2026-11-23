@@ -757,6 +757,11 @@ tbody tr.dg-edge-row:hover td{background:var(--edge-bg)}
 .stock-link{cursor:pointer;color:var(--blue);border-bottom:1px dashed rgba(47,111,208,.4);transition:.12s}
 .stock-link:hover{color:var(--blue2);border-bottom-color:var(--blue2);background:var(--blue-bg)}
 .em-stock-head b .stock-link,.dg-item-top b .stock-link,.pb-item-top b .stock-link,.dg-dh-top h3 .stock-link{border-bottom-color:transparent}
+/* 非主板板块角标：贴在股票名左上角（创=创业板 / 科=科创板 / 北=北交所） */
+.bdg{display:inline-block;font-style:normal;font-weight:700;font-size:9px;line-height:1;padding:2px 3px;margin-right:3px;border-radius:3px;color:#fff;vertical-align:1px;transform:translateY(-1px);white-space:nowrap;cursor:help}
+.bdg-cy{background:#d97706}
+.bdg-kc{background:#2f6fd0}
+.bdg-bj{background:#7c5cbf}
 .sm-mask{position:fixed;inset:0;z-index:200;background:rgba(20,32,48,.5);display:flex;align-items:center;justify-content:center;padding:24px;backdrop-filter:blur(2px)}
 .sm-dialog{background:var(--card);border:1px solid var(--line);border-radius:12px;box-shadow:0 18px 60px rgba(15,30,55,.28);width:min(1500px,100%);max-height:96vh;display:flex;flex-direction:column;overflow:hidden}
 .sm-head{display:flex;align-items:center;gap:14px;padding:14px 18px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#fbfcfe,#fff)}

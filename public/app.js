@@ -13,8 +13,24 @@
   const YI = v => (v === null || v === undefined || !Number.isFinite(Number(v))) ? '—' : (Number(v) / 1e8).toFixed(2) + '亿';
   const tag = (t, cls) => '<span class="tag ' + (cls || '') + '">' + E(t) + '</span>';
   const src = s => '<span class="src">来源：' + E(s) + '</span>';
-  /* 可点击股票名：统一带 data-stock-code，点击弹K线。cls 保留原样式类 */
-  const sn = (code, name, cls) => '<span class="stock-link ' + (cls || '') + '" data-stock-code="' + E(code) + '" title="点击查看K线 / 周K / 筹码峰">' + E(name) + '</span>';
+  /* 板块角标：非主板股票在名称左上角标记（主板不显示）。判定与 lib/datasource.js boardOf 一致 */
+  const BOARD_BADGE = { cy: { c: '创', n: '创业板' }, kc: { c: '科', n: '科创板' }, bj: { c: '北', n: '北交所' } };
+  const boardKey = code => {
+    const c = String(code || '').replace(/\D/g, '');
+    if (/^(600|601|603|605|000|001|002|003)/.test(c)) return '';   // 主板：不标记
+    if (/^(300|301)/.test(c)) return 'cy';
+    if (/^(688|689)/.test(c)) return 'kc';
+    if (/^(8|4|920)/.test(c)) return 'bj';
+    return '';
+  };
+  const boardBadge = code => {
+    const b = BOARD_BADGE[boardKey(code)];
+    return b ? '<i class="bdg bdg-' + boardKey(code) + '" title="' + b.n + '">' + b.c + '</i>' : '';
+  };
+  /* 纯文本角标：用于 echarts 坐标轴标签等无法嵌 HTML 的场景 */
+  const boardText = code => { const b = BOARD_BADGE[boardKey(code)]; return b ? '【' + b.c + '】' : ''; };
+  /* 可点击股票名：统一带 data-stock-code，点击弹K线。cls 保留原样式类。非主板附板块角标 */
+  const sn = (code, name, cls) => '<span class="stock-link ' + (cls || '') + '" data-stock-code="' + E(code) + '" title="点击查看K线 / 周K / 筹码峰">' + boardBadge(code) + E(name) + '</span>';
   const TICK = m => m.quoteTick || m.universeTick || (m.now ? m.now.slice(11, 16) : '—');
   const fmtDate = v => { const s = String(v || '').replace(/\D/g, ''); return s.length === 8 ? s.slice(0, 4) + '-' + s.slice(4, 6) + '-' + s.slice(6, 8) : (v || '—'); };
 
@@ -485,7 +501,7 @@
     const ladderItems = Object.keys(ov.ladder).sort((a, b) => b - a).map(b => ({
       name: b + '板', value: ov.ladder[b], label: ov.ladder[b] + ' 家', color: '#d92b2b'
     }));
-    const space = ov.spaceBoard.length ? ov.spaceBoard.map(x => E(x.name) + '(' + E(x.code) + ') ' + x.boards + '板 · ' + E(x.industry)).join('；') : '无';
+    const space = ov.spaceBoard.length ? ov.spaceBoard.map(x => boardBadge(x.code) + E(x.name) + '(' + E(x.code) + ') ' + x.boards + '板 · ' + E(x.industry)).join('；') : '无';
     // 天梯数据源：若用户选了历史日期，用 /api/ladder 返回的该日涨停池；否则用当日实时池
     const ladderIsHistory = !!(S.ladderDate && S.ladderData && S.ladderData.date === S.ladderDate);
     const ztAll = ladderIsHistory ? (S.ladderData.zt || []) : ((d.opportunities && d.opportunities.zt) || []);
@@ -614,7 +630,7 @@
           return '<span class="th-dragon d' + d.rank + '">' +
             '<b>' + E(d.label) + '</b>' +
             // 股票名带 data-stock-code，走全站事件委托打开分时/日K；title 合并排名依据与点击提示
-            '<span class="stock-link" data-stock-code="' + E(d.code) + '" title="' + dragonTip + '｜点击查看分时图">' + E(d.name) + '</span>' +
+            '<span class="stock-link" data-stock-code="' + E(d.code) + '" title="' + dragonTip + '｜点击查看分时图">' + boardBadge(d.code) + E(d.name) + '</span>' +
             '<span class="th-dragon-b">' + d.boards + '板</span></span>';
         }).join('') + '</div>'
       : '');
@@ -648,7 +664,7 @@
       (t.limitDown ? tag('跌停 ' + t.limitDown, 'green') : '') + '</div>' +
       '<div class="pl-stocks">' + t.stocks.map(x =>
         '<span class="pl-stock ' + x.cls + '" title="' + E(x.code + ' · ' + (x.industry || '—') + ' · 昨' + x.prevBoards + '板 → 今' + (x.currBoards ? x.currBoards + '板' : x.status)) + '">' +
-        E(x.name) + '<b>' + (x.pct === null ? '—' : (x.pct > 0 ? '+' : '') + N(x.pct) + '%') + '</b>' +
+        boardBadge(x.code) + E(x.name) + '<b>' + (x.pct === null ? '—' : (x.pct > 0 ? '+' : '') + N(x.pct) + '%') + '</b>' +
         '<i>' + E(x.status) + '</i></span>').join('') + '</div></div>').join('');
     // 资金方向 + 行业板块 / 概念板块分析（数据：新浪资金流 + 新浪板块行情）
     const ff = d.fundFlow || {}, ffBoards = ff.boards || [];
@@ -663,7 +679,7 @@
     const boardRows = list => list.slice().sort((a, b) => (Number(b.pct) || 0) - (Number(a.pct) || 0)).slice(0, 8).map(x =>
       '<div class="bk-row"><span class="bk-name">' + E(x.name) + '</span>' +
       '<span class="bk-pct ' + (x.pct > 0 ? 'up' : x.pct < 0 ? 'down' : '') + '">' + (x.pct > 0 ? '+' : '') + N(x.pct) + '%</span>' +
-      '<span class="bk-lead">' + (x.leaderName ? E(x.leaderName) + ' ' + (x.leaderPct > 0 ? '+' : '') + N(x.leaderPct) + '%' : '—') + '</span>' +
+      '<span class="bk-lead">' + (x.leaderName ? boardBadge(x.leaderCode) + E(x.leaderName) + ' ' + (x.leaderPct > 0 ? '+' : '') + N(x.leaderPct) + '%' : '—') + '</span>' +
       '<span class="bk-mem">' + E(x.members || 0) + ' 只</span></div>').join('');
     const fundHtml = '<div class="sec"><div class="sec-head"><h3>二、资金方向 · 板块与概念分析</h3>' +
       src((ff.source || '资金流向') + ' / 新浪财经行业·概念板块行情，' + (m.poolDate || '—') + ' ' + TICK(m)) + '</div>' +
@@ -884,7 +900,7 @@
     const conTop = (o.concept || []).slice().sort((a, b) => (b.pct || 0) - (a.pct || 0)).slice(0, 10);
     const boardTable = list =>
       '<div class="tbl-wrap"><table><thead><tr><th class="left">板块</th><th>涨跌幅</th><th>成分</th><th>成交额</th><th class="left">领涨股</th></tr></thead><tbody>' +
-      (list.length ? list.map(b => '<tr><td class="left"><b>' + E(b.name) + '</b></td><td>' + PC(b.pct) + '</td><td>' + E(b.members) + '</td><td>' + AMT(b.amount) + '</td><td class="left">' + E(b.leaderName || '—') + ' <span class="mini-tag">' + PC(b.leaderPct) + '</span></td></tr>').join('') : '<tr><td colspan="5" class="empty">板块数据暂不可用</td></tr>') + '</tbody></table></div>';
+      (list.length ? list.map(b => '<tr><td class="left"><b>' + E(b.name) + '</b></td><td>' + PC(b.pct) + '</td><td>' + E(b.members) + '</td><td>' + AMT(b.amount) + '</td><td class="left">' + (b.leaderName ? boardBadge(b.leaderCode) + E(b.leaderName) : '—') + ' <span class="mini-tag">' + PC(b.leaderPct) + '</span></td></tr>').join('') : '<tr><td colspan="5" class="empty">板块数据暂不可用</td></tr>') + '</tbody></table></div>';
 
     const ztCols = baseCols.concat([
       { t: '连板', f: x => '<b class="up">' + (x.boards || 1) + '</b>' },
@@ -1134,7 +1150,7 @@
         '</div></div></div></div>';
     }).join('');
 
-    const scoreItems = rows.slice(0, 12).map(x => ({ name: x.name + '(' + x.code + ')', value: x.techScore || 0, label: x.techScore === null ? '—' : x.techScore }));
+    const scoreItems = rows.slice(0, 12).map(x => ({ name: boardText(x.code) + x.name + '(' + x.code + ')', value: x.techScore || 0, label: x.techScore === null ? '—' : x.techScore }));
 
     const liveRows = lowBuyLiveRows(d);
     $('pane-lowbuy').innerHTML = summary +
@@ -1211,7 +1227,7 @@
         '<div class="kv"><span class="k">竞价观察区间</span><span class="v">' + (a.auctionZone ? a.auctionZone[0] + ' — ' + a.auctionZone[1] : '—') + '</span></div>' +
         '<div class="note-box">竞价区间为按今日收盘价 ±2% 的规则测算，不是价格预测；实际以次日集合竞价与交易所行情为准。</div></div>';
       const peers = (x.peers || []).length
-        ? '<div class="lb-sub"><h5>同题材卡位竞争</h5>' + x.peers.map(p => '<div class="kv"><span class="k">' + E(p.name) + '(' + E(p.code) + ')</span><span class="v">' + E(p.boards) + ' 板</span></div>').join('') + '</div>'
+        ? '<div class="lb-sub"><h5>同题材卡位竞争</h5>' + x.peers.map(p => '<div class="kv"><span class="k">' + boardBadge(p.code) + E(p.name) + '(' + E(p.code) + ')</span><span class="v">' + E(p.boards) + ' 板</span></div>').join('') + '</div>'
         : '';
       const detail = '<div class="grid2" style="gap:14px"><div>' +
         '<div class="lb-sub"><h5>接力评分拆解（' + E(x.relayScore) + ' / 100）</h5><div class="score-parts">' + parts + '</div>' +
@@ -1271,7 +1287,7 @@
       });
     };
 
-    const top = rows.slice(0, 10).map(x => ({ name: x.name + '(' + x.code + ')', value: x.relayScore, label: x.relayScore }));
+    const top = rows.slice(0, 10).map(x => ({ name: boardText(x.code) + x.name + '(' + x.code + ')', value: x.relayScore, label: x.relayScore }));
     const opt = {
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
       grid: { left: 130, right: 40, top: 10, bottom: 24 },
@@ -2107,7 +2123,7 @@
         '<div class="theme-meta">' + tag(t.group, 'purple') + tag(t.count + ' 只涨停', 'red') +
         tag('最高 ' + t.maxBoards + ' 连板', '') + tag('累计最高 ' + t.maxCum + ' 板', 'blue') + '</div>' +
         '<p><b>成分股：</b>' + E(t.names.join('、')) + '</p>' +
-        '<p style="margin-top:5px"><b>梯队：</b>' + (t.leaders || []).map(l => E(l.name) + '（' + E(l.label) + '）').join('、') + '</p>' +
+        '<p style="margin-top:5px"><b>梯队：</b>' + (t.leaders || []).map(l => boardBadge(l.code) + E(l.name) + '（' + E(l.label) + '）').join('、') + '</p>' +
         '<div class="note-box"><b>识别依据：</b>' + E(t.basis) + '<br><b>边界：</b>' + E(t.caveat) + '</div></div>'
       ).join('') + '</div>'
       : '<div class="card empty">当日涨停股名称未出现符合阈值的字面共振（玄学 / 名字主线未识别到，不代表市场没有，仅说明字面证据不足）</div>';
@@ -2416,8 +2432,8 @@
         }).join('') + '</tbody></table></div>'
       : '<div class="empty">当日回放没有可展示的龙头候选。</div>';
     const extremes = (pf.best || pf.worst)
-      ? '<div class="small muted" style="margin-top:8px">涨幅最高：<b>' + E((pf.best || {}).name || '—') + '</b> ' + dhPct((pf.best || {}).closePct) +
-        '　跌幅最大：<b>' + E((pf.worst || {}).name || '—') + '</b> ' + dhPct((pf.worst || {}).closePct) + '</div>' : '';
+      ? '<div class="small muted" style="margin-top:8px">涨幅最高：<b>' + boardBadge((pf.best || {}).code) + E((pf.best || {}).name || '—') + '</b> ' + dhPct((pf.best || {}).closePct) +
+        '　跌幅最大：<b>' + boardBadge((pf.worst || {}).code) + E((pf.worst || {}).name || '—') + '</b> ' + dhPct((pf.worst || {}).closePct) + '</div>' : '';
     return head + kpis +
       '<div class="dh-dtype"><div class="dg-h5">按分歧类型看晋级与次日涨跌（样本小，仅作对照）</div>' +
       '<div class="tbl-wrap"><table><thead><tr><th>分歧类型</th><th>候选</th><th>晋级</th><th>晋级率</th><th>平均次日涨跌</th><th>上涨占比</th></tr></thead><tbody>' +
@@ -2512,7 +2528,7 @@
     const excl = (j.excluded || []).length && Number(S.dgOpts.showAll) === 0
       ? '<div class="card pad dg-card dg-excluded"><div class="dg-h5">「只做龙头」纪律剔除（' + E(j.excluded.length) + ' 只，仅作对照）</div>' +
       '<div class="dg-excl-tags">' + j.excluded.slice(0, 18).map(x =>
-        '<span class="tag" title="' + E(x.roleReason) + '">' + E(x.name) + ' ' + E(x.boardLabel || (x.boards + '板')) + ' · ' + E(x.role) + '</span>').join('') +
+        '<span class="tag" title="' + E(x.roleReason) + '">' + boardBadge(x.code) + E(x.name) + ' ' + E(x.boardLabel || (x.boards + '板')) + ' · ' + E(x.role) + '</span>').join('') +
       (j.excluded.length > 18 ? '<span class="small muted">等共 ' + E(j.excluded.length) + ' 只</span>' : '') + '</div></div>' : '';
     const disc = '<div class="disclaimer" style="margin-top:14px"><strong>免责声明</strong>：以上内容基于公开数据和量化分析，仅供参考，不构成投资建议。市场有风险，投资需谨慎。任何投资决策应结合个人风险承受能力、资金状况和投资目标独立判断，必要时咨询持牌专业机构。过往表现不预示未来收益。</div>';
     $('pane-dragon').innerHTML = dgHead(j) + dgSource(j) + nwPanel() + dgSentimentCard(j) +
@@ -2638,7 +2654,7 @@
   function nwItemHtml(x, compact) {
     const matched = (x.matched || []).length
       ? x.matched.map(m => '<span class="nw-code' + (m.confidence === '精确' ? ' exact' : '') + '" title="' + E(m.method) + '">' +
-        E(m.name) + ' ' + E(m.code) + ' · ' + E(m.confidence) + '</span>').join('')
+        boardBadge(m.code) + E(m.name) + ' ' + E(m.code) + ' · ' + E(m.confidence) + '</span>').join('')
       : '<span class="small muted">未精确关联个股（市场 / 政策面）</span>';
     const hits = (x.hits || []).length ? x.hits.map(h => E(h.words.join('、'))).join(' / ') : '—';
     const links = (x.url ? '<a href="' + E(x.url) + '" target="_blank" rel="noopener noreferrer">原文 ↗</a>' : '') +
@@ -3405,7 +3421,7 @@
     const pick = x => {
       close(); input.value = '';
       openStockChart(x.code);
-      if (S.chart && x.name) { S.chart.name = x.name; $('smName').textContent = x.name; }
+      if (S.chart && x.name) { S.chart.name = x.name; $('smName').innerHTML = boardBadge(x.code) + E(x.name); }
     };
     input.addEventListener('input', () => {
       clearTimeout(timer);
@@ -3420,7 +3436,7 @@
             panel.innerHTML = '<div class="ss-empty">未找到匹配股票（全市场约 5,500 只，可按代码 / 名称 / 拼音首字母匹配，如 dfhy）</div>';
           } else {
             panel.innerHTML = hits.map((x, i) =>
-              '<div class="ss-item" data-i="' + i + '"><b>' + E(x.name) + '</b><span class="ss-code">' + E(x.code) + '</span>' +
+              '<div class="ss-item" data-i="' + i + '"><b>' + boardBadge(x.code) + E(x.name) + '</b><span class="ss-code">' + E(x.code) + '</span>' +
               '<span class="ss-px ' + (x.pct > 0 ? 'up' : x.pct < 0 ? 'down' : '') + '">' + N(x.price) + '</span>' +
               '<span class="ss-pct ' + (x.pct > 0 ? 'up' : x.pct < 0 ? 'down' : '') + '">' + (x.pct > 0 ? '+' : '') + N(x.pct) + '%</span>' +
               '<span class="ss-board">' + E(x.board || '') + '</span></div>').join('') +
@@ -3453,7 +3469,7 @@
     stopMinuteTimer();
     S.chart = { open: true, code: c, name: c, period: 'minute', data: null, loading: true, error: null, view: null, geom: null, lockIdx: null };
     $('stockModal').style.display = 'flex';
-    $('smName').textContent = c;
+    $('smName').innerHTML = boardBadge(c) + E(c);
     $('smCode').textContent = '';
     $('smQuote').innerHTML = '';
     $('smSource').textContent = '载入中…';
@@ -3468,7 +3484,7 @@
         S.chart.data = j;
         S.chart.name = j.name || c;
         S.chart.loading = false;
-        $('smName').textContent = j.name || c;
+        $('smName').innerHTML = boardBadge(c) + E(j.name || c);
         $('smCode').textContent = E(c);
         renderStockChart();
       })
