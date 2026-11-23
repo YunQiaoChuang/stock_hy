@@ -29,6 +29,7 @@
   };
   /* 纯文本角标：用于 echarts 坐标轴标签等无法嵌 HTML 的场景 */
   const boardText = code => { const b = BOARD_BADGE[boardKey(code)]; return b ? '【' + b.c + '】' : ''; };
+  const boardOfCode = code => { const k = boardKey(code); return k ? BOARD_BADGE[k].n : '主板'; };
   /* 可点击股票名：统一带 data-stock-code，点击弹K线。cls 保留原样式类。非主板附板块角标 */
   const sn = (code, name, cls) => '<span class="stock-link ' + (cls || '') + '" data-stock-code="' + E(code) + '" title="点击查看K线 / 周K / 筹码峰">' + boardBadge(code) + E(name) + '</span>';
   const TICK = m => m.quoteTick || m.universeTick || (m.now ? m.now.slice(11, 16) : '—');
@@ -70,6 +71,21 @@
   function ladderMarksSave() {
     try { localStorage.setItem(LADDER_MARKS_KEY, JSON.stringify(S.ladderMarks)); } catch (e) { /* 隐私模式下忽略 */ }
   }
+  /* ── 自选股（localStorage，仅存代码+名称，行情一律实时拉取） ── */
+  const WATCH_KEY = 'stockhy_watchlist_v1';
+  function watchLoad() {
+    try {
+      const a = JSON.parse(localStorage.getItem(WATCH_KEY) || '[]');
+      if (!Array.isArray(a)) return [];
+      return a.filter(x => x && /^\d{6}$/.test(String(x.code || '')))
+        .map(x => ({ code: String(x.code), name: String(x.name || x.code) }))
+        .slice(0, 200);
+    } catch (e) { return []; }
+  }
+  function watchSave() {
+    try { localStorage.setItem(WATCH_KEY, JSON.stringify(S.watch.list)); } catch (e) { /* 隐私模式下忽略 */ }
+    const b = $('badgeWatch'); if (b) b.textContent = S.watch.list.length;
+  }
   /* 涨跌幅上限：主板10% / 创业板+科创板20% / 北交所30% / ST 5% */
   function klLimitRate(code, name) {
     const c = String(code || ''), nm = String(name || '').toUpperCase();
@@ -105,6 +121,7 @@
   /* ── 模块显示配置：顶部导航只展示勾选的模块，持久化到 localStorage ── */
   const MODULE_CFG_KEY = 'stockhy_visible_modules_v1';
   const MODULES = [
+    { id: 'watchlist', label: '自选股' },
     { id: 'review', label: '复盘计划' },
     { id: 'picks', label: '短线个股推荐' },
     { id: 'live', label: '实时机会' },
@@ -162,7 +179,8 @@
     newsKeyword: '', newsMethodOpen: false, newsShowAll: false,
     newsTimer: null, newsTickTimer: null, newsNextAt: 0, newsCodes: '',
     en: null, enLoading: false, enError: null, enOpts: { days: 8 },
-    chart: { open: false, code: null, name: null, period: 'minute', data: null, loading: false, error: null, view: null, geom: null, lockIdx: null },
+    chart: { open: false, code: null, name: null, period: 'minute', data: null, loading: false, error: null, view: null, geom: null, lockIdx: null, docked: false },
+    watch: { list: watchLoad(), quotes: {}, sel: null, at: 0 },
     klColors: klLoadColors(), klPanelOpen: false
   };
   // 消息面三个源只在「明日龙头」模块启用后才调用，未调用前不计入主看板在线率分母
@@ -215,7 +233,7 @@
     // 全局股票名点击委托：打开个股K线弹窗
     document.addEventListener('click', e => {
       const el = e.target.closest('[data-stock-code]');
-      if (el) { e.preventDefault(); e.stopPropagation(); openStockChart(el.dataset.stockCode); return; }
+      if (el) { e.preventDefault(); e.stopPropagation(); openStockChart(el.dataset.stockCode, S.tab === 'watchlist' && !!S.chart.docked); return; }
       if (e.target.closest('#smClose') || e.target.id === 'stockModal') closeStockChart();
     });
     document.addEventListener('keydown', e => {
@@ -224,6 +242,11 @@
       else if (S.chart.open) closeStockChart();
     });
     if ($('smClose')) $('smClose').onclick = closeStockChart;
+    if ($('smStar')) $('smStar').onclick = () => {
+      const c = S.chart && S.chart.code, nm = S.chart && S.chart.name;
+      if (!c) return;
+      watchToggle(c, nm || c);
+    };
     initStockSearch();
     [...document.querySelectorAll('.sm-tab')].forEach(b => {
       b.onclick = () => {
@@ -240,7 +263,7 @@
     applyModuleCfg();
     const qs = new URLSearchParams(location.search);
     const initTab = qs.get('tab');
-    if (initTab && ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'support', 'dragon', 'auction', 'predict', 'enlighten'].indexOf(initTab) >= 0) switchTab(initTab);
+    if (initTab && ['watchlist', 'review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'support', 'dragon', 'auction', 'predict', 'enlighten'].indexOf(initTab) >= 0) switchTab(initTab);
     // 深链：?stock=000001&period=week 直接打开个股K线弹窗
     const initStock = qs.get('stock');
     if (/^\d{6}$/.test(initStock || '')) {
@@ -375,6 +398,7 @@
         (S.pullFilters !== S.lastFilters || Date.now() - S.pullAt > 60000)) loadPullback(false);
       if (S.tab === 'dragon' && Date.now() - S.dgAt > 12000 &&
         (S.dgFilters !== S.lastFilters || Date.now() - S.dgAt > 60000)) loadDragon(false);
+      if (S.watch.list.length) refreshWatchQuotes(false);
       $('loading').classList.add('hide');
       $('alertBox').style.display = 'none';
     } catch (e) {
@@ -443,7 +467,8 @@
     if (MODULE_IDS.indexOf(t) < 0 || S.visibleModules.indexOf(t) < 0) return;
     S.tab = t;
     [...$('tabs').children].forEach(c => c.classList.toggle('active', c.dataset.tab === t));
-    ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'support', 'dragon', 'auction', 'predict', 'enlighten'].forEach(k => $('pane-' + k).classList.toggle('active', k === t));
+    ['watchlist', 'review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'support', 'dragon', 'auction', 'predict', 'enlighten'].forEach(k => $('pane-' + k).classList.toggle('active', k === t));
+    if (t === 'watchlist') { renderWatchlist(); refreshWatchQuotes(true); }
     if (t === 'pullback' && !S.pull && !S.pullLoading) loadPullback(false);
     if (t === 'support' && !S.support && !S.supportLoading) loadSupportReversal(false);
     if (t === 'dragon') {
@@ -475,6 +500,7 @@
     renderAI(d);
     renderFooter(d);
     $('filterSummary').textContent = '当前：' + S.lastFilters;
+    $('badgeWatch').textContent = S.watch.list.length;
     $('badgePicks').textContent = (d.picks || []).length;
     $('badgeLive').textContent = ov.limitUp + ' 涨停';
     $('badgeLow').textContent = (d.lowbuy || []).length;
@@ -3643,9 +3669,18 @@
               '<div class="ss-item" data-i="' + i + '"><b>' + boardBadge(x.code) + E(x.name) + '</b><span class="ss-code">' + E(x.code) + '</span>' +
               '<span class="ss-px ' + (x.pct > 0 ? 'up' : x.pct < 0 ? 'down' : '') + '">' + N(x.price) + '</span>' +
               '<span class="ss-pct ' + (x.pct > 0 ? 'up' : x.pct < 0 ? 'down' : '') + '">' + (x.pct > 0 ? '+' : '') + N(x.pct) + '%</span>' +
-              '<span class="ss-board">' + E(x.board || '') + '</span></div>').join('') +
-              '<div class="ss-foot">新浪财经全市场行情 · 截至 ' + E(String(j.asOf || '').slice(0, 16).replace('T', ' ')) + ' · ↑↓ 选择 / Enter 打开</div>';
+              '<span class="ss-board">' + E(x.board || '') + '</span>' +
+              '<button class="ss-star' + (wlHas(x.code) ? ' on' : '') + '" data-ss-star="' + E(x.code) + '" title="加入 / 取消自选">' + (wlHas(x.code) ? '★' : '☆') + '</button></div>').join('') +
+              '<div class="ss-foot">新浪财经全市场行情 · 截至 ' + E(String(j.asOf || '').slice(0, 16).replace('T', ' ')) + ' · ↑↓ 选择 / Enter 打开 · ☆ 加自选</div>';
             [...panel.querySelectorAll('.ss-item')].forEach(el => { el.onclick = () => pick(hits[Number(el.dataset.i)]); });
+            [...panel.querySelectorAll('[data-ss-star]')].forEach(b => {
+              b.onclick = ev => {
+                ev.preventDefault(); ev.stopPropagation();
+                const code = b.dataset.ssStar, hit = hits.find(h => String(h.code) === code) || {};
+                watchToggle(code, hit.name || code);
+                b.classList.toggle('on', wlHas(code)); b.textContent = wlHas(code) ? '★' : '☆';
+              };
+            });
           }
           panel.style.display = 'block';
         } catch (e) { panel.innerHTML = '<div class="ss-empty">搜索失败：' + E(e.message) + '</div>'; panel.style.display = 'block'; }
@@ -3666,13 +3701,174 @@
     });
   }
 
+  /* ═══════════════ 自选股：左侧列表 + 右侧复用个股详情 ═══════════════ */
+  const wlFind = code => S.watch.list.find(x => x.code === String(code));
+  const wlHas = code => !!wlFind(code);
+  let smDialogEl = null; // 弹窗 .sm-dialog 节点引用：在遮罩与自选右栏间移动复用
+  const getSmDialog = () => smDialogEl || (smDialogEl = document.querySelector('.sm-dialog'));
+  /** 把个股详情停靠到自选右栏（docked=true）或移回弹窗遮罩（false） */
+  function dockDialog(docked) {
+    const dlg = getSmDialog(), modal = $('stockModal'); if (!dlg || !modal) return;
+    S.chart.docked = !!docked;
+    if (docked) {
+      const host = $('wlDetail');
+      if (host) { host.innerHTML = ''; host.appendChild(dlg); }
+      modal.style.display = 'none';
+      document.body.style.overflow = '';
+    } else {
+      if (dlg.parentNode !== modal) modal.appendChild(dlg);
+      modal.style.display = 'flex';
+      document.body.style.overflow = 'hidden';
+    }
+  }
+  /** renderWatchlist 重建左栏前先摘下已停靠的详情节点，避免连同 innerHTML 一起销毁 */
+  function detachDockedDialog() {
+    if (!S.chart.docked) return;
+    const dlg = getSmDialog();
+    if (dlg && dlg.parentNode) dlg.parentNode.removeChild(dlg);
+  }
+  /** 详情渲染完成后把节点重新挂回右栏 */
+  function reattachDockedDialog() {
+    if (!S.chart.docked) return;
+    const dlg = getSmDialog(), host = $('wlDetail');
+    if (dlg && host && dlg.parentNode !== host) host.appendChild(dlg);
+  }
+  function updateStar() {
+    const b = $('smStar'); if (!b) return;
+    const code = S.chart && S.chart.code;
+    const on = !!(code && wlHas(code));
+    b.classList.toggle('on', on);
+    b.textContent = on ? '★' : '☆';
+    b.title = on ? '取消自选' : '加入自选';
+  }
+
+  function watchAdd(code, name) {
+    const c = String(code || '').replace(/\D/g, '').slice(0, 6);
+    if (!/^\d{6}$/.test(c) || wlHas(c)) return false;
+    S.watch.list.push({ code: c, name: String(name || c) });
+    watchSave(); renderWatchlist(); refreshWatchQuotes(true); updateStar();
+    return true;
+  }
+  function watchRemove(code) {
+    const c = String(code || '');
+    S.watch.list = S.watch.list.filter(x => x.code !== c);
+    watchSave(); renderWatchlist(); updateStar();
+  }
+  function watchToggle(code, name) {
+    if (wlHas(code)) { watchRemove(code); return false; }
+    watchAdd(code, name); return true;
+  }
+
+  /** 左栏列表：用 /api/quotes 批量实时行情，逐只显示现价/涨跌幅，点击进入右栏详情 */
+  function renderWatchlist() {
+    const pane = $('pane-watchlist'); if (!pane) return;
+    detachDockedDialog();
+    const list = S.watch.list;
+    const q = S.watch.quotes || {};
+    if (!list.length) {
+      pane.innerHTML = '<div class="wl-layout"><div class="wl-panel">' +
+        '<div class="wl-panel-head"><h3>自选股 <span class="muted small" id="wlCount">0</span></h3>' +
+        '<div class="wl-panel-tools"><button class="wl-btn" id="wlAddBtn">＋ 添加</button></div></div>' +
+        '<div class="wl-add-row" id="wlAddRow"><input id="wlAddInput" placeholder="代码 / 名称 / 拼音，如 dfhy" autocomplete="off"><button class="wl-btn primary" id="wlAddOk">添加</button></div>' +
+        '<div class="wl-empty">还没有自选股。<br>点「＋ 添加」输入代码、名称或拼音首字母；<br>也可在搜索结果 / 个股详情点 ☆ 加入。</div></div>' +
+        '<div class="wl-detail" id="wlDetail"><div class="wl-empty">从左侧选择一只自选股，右侧显示分时 / 日K / 筹码峰 / 详情</div></div></div>';
+      bindWatchEvents(); return;
+    }
+    const items = list.map(x => {
+      const qq = q[x.code] || {};
+      const px = qq.price > 0 ? N(qq.price) : '—';
+      const pct = Number.isFinite(Number(qq.pct)) ? Number(qq.pct) : null;
+      const pcls = pct === null ? '' : (pct > 0 ? 'up' : pct < 0 ? 'down' : '');
+      const pctTxt = pct === null ? '—' : (pct > 0 ? '+' : '') + N(pct) + '%';
+      const active = S.watch.sel === x.code ? ' active' : '';
+      return '<div class="wl-item' + active + '" data-wl-code="' + E(x.code) + '">' +
+        '<div class="wl-item-top">' + boardBadge(x.code) +
+        '<span class="wl-item-name">' + E(x.name) + '</span>' +
+        '<span class="wl-item-code">' + E(x.code) + '</span>' +
+        '<button class="wl-del" data-wl-del="' + E(x.code) + '" title="移出自选">×</button></div>' +
+        '<div class="wl-item-bottom"><span class="wl-item-px ' + pcls + '">' + px + '</span>' +
+        '<span class="wl-item-pct ' + pcls + '">' + pctTxt + '</span>' +
+        '<span class="wl-item-sub">' + E(boardOfCode(x.code) || '') + '</span></div></div>';
+    }).join('');
+    pane.innerHTML = '<div class="wl-layout"><div class="wl-panel">' +
+      '<div class="wl-panel-head"><h3>自选股 <span class="muted small" id="wlCount">' + list.length + '</span></h3>' +
+      '<div class="wl-panel-tools"><button class="wl-btn primary" id="wlAddBtn">＋ 添加</button></div></div>' +
+      '<div class="wl-add-row" id="wlAddRow"><input id="wlAddInput" placeholder="代码 / 名称 / 拼音，如 dfhy" autocomplete="off"><button class="wl-btn primary" id="wlAddOk">添加</button></div>' +
+      '<div class="wl-list" id="wlList">' + items + '</div>' +
+      '<div class="small muted" style="margin-top:7px;line-height:1.6">行情为腾讯实时快照，随主看板刷新；列表存本地浏览器，不上传。</div></div>' +
+      '<div class="wl-detail" id="wlDetail"><div class="wl-empty">从左侧选择一只自选股，右侧显示分时 / 日K / 筹码峰 / 详情</div></div></div>';
+    bindWatchEvents();
+  }
+
+  /** 批量拉自选股实时行情（复用顶部搜索同款 /api/quotes） */
+  async function refreshWatchQuotes(force) {
+    const list = S.watch.list; if (!list.length) return;
+    if (!force && Date.now() - (S.watch.at || 0) < 8000) return;
+    S.watch.at = Date.now();
+    try {
+      const codes = list.map(x => x.code).join(',');
+      const r = await fetch('/api/quotes?codes=' + encodeURIComponent(codes), { cache: 'no-store' });
+      const j = await r.json();
+      if (j.quotes) {
+        Object.keys(j.quotes).forEach(c => {
+          const qq = j.quotes[c] || {};
+          const hit = wlFind(c); if (hit && qq.name) hit.name = qq.name;
+        });
+        S.watch.quotes = j.quotes;
+        if (S.tab === 'watchlist') renderWatchlist();
+      }
+    } catch (e) { /* 行情刷新失败保留上一帧 */ }
+  }
+
+  function bindWatchEvents() {
+    const pane = $('pane-watchlist'); if (!pane) return;
+    reattachDockedDialog();
+    if (pane.dataset.bound === '1') return;
+    // 事件委托绑在 pane 上，renderWatchlist 重建 innerHTML 后仍有效
+    pane.addEventListener('click', e => {
+      const del = e.target.closest('[data-wl-del]');
+      if (del) { e.stopPropagation(); watchRemove(del.dataset.wlDel); return; }
+      if (e.target.closest('#wlAddBtn')) {
+        const row = $('wlAddRow'); if (row) row.classList.toggle('open');
+        const inp = $('wlAddInput'); if (inp && row.classList.contains('open')) inp.focus();
+        return;
+      }
+      if (e.target.closest('#wlAddOk') || (e.key === 'Enter' && e.target.id === 'wlAddInput')) { doWatchAdd(); return; }
+      const item = e.target.closest('[data-wl-code]');
+      if (item) {
+        e.stopPropagation();
+        const code = item.dataset.wlCode;
+        S.watch.sel = code;
+        [...pane.querySelectorAll('.wl-item')].forEach(el => el.classList.toggle('active', el.dataset.wlCode === code));
+        openStockChart(code, true); // docked：详情停靠到右栏
+      }
+    });
+    pane.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id === 'wlAddInput') { e.preventDefault(); doWatchAdd(); } });
+    pane.dataset.bound = '1';
+  }
+
+  async function doWatchAdd() {
+    const inp = $('wlAddInput'); if (!inp) return;
+    const kw = inp.value.trim(); if (!kw) return;
+    inp.disabled = true;
+    try {
+      if (/^\d{6}$/.test(kw)) { watchAdd(kw, kw); inp.value = ''; return; }
+      const r = await fetch('/api/search?q=' + encodeURIComponent(kw), { cache: 'no-store' });
+      const j = await r.json();
+      const hit = (j.list || [])[0];
+      if (hit) { watchAdd(hit.code, hit.name); inp.value = ''; }
+      else { inp.title = '未找到匹配股票'; setTimeout(() => { inp.title = ''; }, 2500); }
+    } catch (e) { /* 添加失败不打断 */ }
+    finally { inp.disabled = false; }
+  }
+
   /* ═══════════════ 个股K线弹窗：分时 / 日K / 周K / 成交量 / 筹码峰 ═══════════════ */
-  function openStockChart(code) {
+  function openStockChart(code, docked) {
     const c = String(code || '').replace(/\D/g, '').slice(0, 6);
     if (!/^\d{6}$/.test(c)) return;
     stopMinuteTimer();
-    S.chart = { open: true, code: c, name: c, period: 'minute', data: null, loading: true, error: null, view: null, geom: null, lockIdx: null };
-    $('stockModal').style.display = 'flex';
+    S.chart = { open: true, code: c, name: c, period: 'minute', data: null, loading: true, error: null, view: null, geom: null, lockIdx: null, docked: !!docked };
+    dockDialog(!!docked);
     $('smName').innerHTML = boardBadge(c) + E(c);
     $('smCode').textContent = '';
     $('smQuote').innerHTML = '';
@@ -3688,8 +3884,11 @@
         S.chart.data = j;
         S.chart.name = j.name || c;
         S.chart.loading = false;
+        // 用接口返回的真实名称回填自选列表（搜索添加时可能只有代码占位）
+        const wl = wlFind(c); if (wl && j.name) { wl.name = j.name; watchSave(); if (S.tab === 'watchlist') renderWatchlist(); }
         $('smName').innerHTML = boardBadge(c) + E(j.name || c);
         $('smCode').textContent = E(c);
+        updateStar();
         renderStockChart();
       })
       .catch(e => {
@@ -3763,6 +3962,16 @@
   function closeStockChart() {
     stopMinuteTimer();
     S.chart.open = false;
+    if (S.chart.docked) {
+      // 停靠态：把详情节点移回遮罩并隐藏，右栏恢复空提示
+      const dlg = getSmDialog(), m = $('stockModal');
+      if (dlg && m && dlg.parentNode !== m) m.appendChild(dlg);
+      if (m) m.style.display = 'none';
+      const host = $('wlDetail'); if (host) host.innerHTML = '<div class="wl-empty">已从左侧选择 ' + E(S.chart.code || '') + '，点击可再次查看详情</div>';
+      document.body.style.overflow = '';
+      S.chart.docked = false;
+      return;
+    }
     const m = $('stockModal'); if (m) m.style.display = 'none';
     document.body.style.overflow = '';
   }
