@@ -3620,12 +3620,13 @@
       const x = tX(tk.m);
       a.push('<line x1="' + x.toFixed(1) + '" y1="' + PT + '" x2="' + x.toFixed(1) + '" y2="' + VB + '" stroke="' + (k === 2 ? '#cbd5e1' : '#eef2f7') + '" stroke-dasharray="' + (k === 2 ? '3 4' : '2 5') + '"/>');
     });
-    // 首封时刻竖线：把封单情况直接标在分时图上（来自东财涨停/炸板池快照）
+    // 首封时刻竖线：把封单情况直接标在分时图上（来自东财涨停/炸板/跌停池快照，跌停用绿色）
     const sealMin = seal && seal.firstSeal ? toMin(String(seal.firstSeal).slice(0, 5)) : null;
     if (sealMin !== null && sealMin !== undefined) {
-      const sx = tX(sealMin);
-      a.push('<line x1="' + sx.toFixed(1) + '" y1="' + PT + '" x2="' + sx.toFixed(1) + '" y2="' + VB + '" stroke="#e3a800" stroke-dasharray="4 3"/>');
-      a.push('<text x="' + Math.min(sx + 5, W - R - 92).toFixed(1) + '" y="' + (PT + 12) + '" font-size="10" fill="#a87600">首封 ' + E(String(seal.firstSeal).slice(0, 5)) + '</text>');
+      const sx = tX(sealMin), isDtSeal = seal.kind === 'dt';
+      const sealColor = isDtSeal ? '#0f9960' : '#e3a800', sealTextColor = isDtSeal ? '#0b7a4b' : '#a87600';
+      a.push('<line x1="' + sx.toFixed(1) + '" y1="' + PT + '" x2="' + sx.toFixed(1) + '" y2="' + VB + '" stroke="' + sealColor + '" stroke-dasharray="4 3"/>');
+      a.push('<text x="' + Math.min(sx + 5, W - R - 92).toFixed(1) + '" y="' + (PT + 12) + '" font-size="10" fill="' + sealTextColor + '">' + (isDtSeal ? '首封跌停 ' : '首封 ') + E(String(seal.firstSeal).slice(0, 5)) + '</text>');
     }
     // 横向网格 + 涨跌幅刻度
     for (let k = 0; k <= 4; k++) {
@@ -3724,18 +3725,23 @@
       ['涨停价', N(q.limitUp), 'up'],
       ['跌停价', N(q.limitDown), 'down']
     ].map(r => sideRow(r[0], r[1], r[2])).join('');
+    const isDt = seal && seal.kind === 'dt';
+    const isZb = seal && seal.kind === 'zb';
+    const sealTitle = isDt ? '跌停封单' : isZb ? '炸板池封单快照' : '涨停封单';
     const sealHtml = seal
-      ? '<div class="sm-side-seal' + (seal.kind === 'zb' ? ' is-broken' : '') + '">' +
-          '<div class="sm-side-seal-h"><b>' + (seal.kind === 'zb' ? '炸板池封单快照' : '涨停封单') + '</b>' +
-          (Number(seal.boards) > 1 ? '<span>' + seal.boards + ' 连板</span>' : '') + '</div>' +
+      ? '<div class="sm-side-seal' + (isDt ? ' is-down' : isZb ? ' is-broken' : '') + '">' +
+          '<div class="sm-side-seal-h"><b>' + sealTitle + '</b>' +
+          (isDt
+            ? (Number(seal.downDays) > 1 ? '<span>连续跌停 ' + seal.downDays + ' 天</span>' : '<span>首日跌停</span>')
+            : (Number(seal.boards) > 1 ? '<span>' + seal.boards + ' 连板</span>' : '')) + '</div>' +
           sideRow('封单额', money(seal.sealFund), 'seal-amt') +
           (Number.isFinite(seal.sealFundRatio) && seal.sealFundRatio !== null ? sideRow('占流通', N(seal.sealFundRatio) + '%', '') : '') +
-          sideRow('首封时间', E(seal.firstSeal || '—'), '') +
-          sideRow('炸板次数', (Number(seal.brokenCount) || 0) + ' 次', Number(seal.brokenCount) > 0 ? 'down' : '') +
+          sideRow(isDt ? '首封跌停' : '首封时间', E(seal.firstSeal || '—'), '') +
+          sideRow(isDt ? '撬板次数' : '炸板次数', (Number(seal.brokenCount) || 0) + ' 次', Number(seal.brokenCount) > 0 ? (isDt ? '' : 'down') : '') +
           '<div class="sm-side-seal-foot">' + E(String(seal.date || '')) + ' · ' + E(seal.source || '') + '</div>' +
         '</div>'
-      : '<div class="sm-side-seal is-none"><div class="sm-side-seal-h"><b>涨停封单</b></div>' +
-        '<div class="sm-side-seal-none">该股当日未进入涨停 / 炸板池，无封单快照</div></div>';
+      : '<div class="sm-side-seal is-none"><div class="sm-side-seal-h"><b>涨停 / 跌停封单</b></div>' +
+        '<div class="sm-side-seal-none">该股当日未进入涨停 / 炸板 / 跌停池，无封单快照</div></div>';
     return '<div class="sm-minute-side">' +
       '<div class="sm-side-quote"><div class="sm-side-h">分时快照 <span class="small muted">' + E(q.ticktime || '') + '</span></div>' + quoteRows + '</div>' +
       sealHtml + '</div>';
@@ -3923,7 +3929,7 @@
           '<br>' + (md.granularity === 5 ? '5 分钟线每根为该 5 分钟收盘价与区间成交量，走势与 1 分钟一致，但不及后者细腻。' : '分钟级数据，不是逐笔成交，不构成投资建议。') + '</div>';
       } else {
         $('smFoot').innerHTML = '<div class="note-box">分时数据来自腾讯证券公开接口（每分钟价格 / 成交量 / 成交额）；均价线＝累计成交额 ÷ 累计成交量，与行情软件口径一致。' +
-          '<br><b>封单：</b>' + (seal ? '东方财富' + (seal.kind === 'zb' ? '炸板' : '涨停') + '池 ' + E(String(seal.date || '')) + ' 快照（封单额 / 占流通市值 / 首封 / 炸板次数），随分时同步刷新；是池内快照，不是逐笔或分钟连续封单曲线。' : '该股当日未进入涨停 / 炸板池，故无封单快照。') +
+          '<br><b>封单：</b>' + (seal ? '东方财富' + (seal.kind === 'dt' ? '跌停' : seal.kind === 'zb' ? '炸板' : '涨停') + '池 ' + E(String(seal.date || '')) + ' 快照（封单额 / 占流通市值 / ' + (seal.kind === 'dt' ? '首封跌停 / 撬板次数 / 连续跌停天数' : '首封 / 炸板次数') + '），随分时同步刷新；是池内快照，不是逐笔或分钟连续封单曲线。' : '该股当日未进入涨停 / 炸板 / 跌停池，故无封单快照。') +
           '<br><b>当日资金：</b>' + E(fn.caliber || '主力净额=超大单+大单（东方财富口径）') + '，与下方日K资金柱同口径。' +
           (trading
             ? '<b>当前为交易时段，每 12 秒自动重拉分时</b>；盘后自动停止。'

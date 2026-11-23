@@ -399,10 +399,15 @@ async function buildPullback(query) {
   return { meta, summary, methodology: an.PULLBACK_METHOD, list };
 }
 
-/** 从东财涨停 / 炸板池提取个股当日封单快照（分时图用）；未入池返回 null */
+/** 从东财涨停 / 炸板 / 跌停池提取个股当日封单快照（分时图用）；未入池返回 null
+ *  跌停池同样带 fund（封单额）、fbt（首次封跌停）、oc（撬板次数），此前漏读导致跌停股无封单额 */
 function stockSeal(pools, code) {
   const p = pools || {};
-  const rows = [...(Array.isArray(p.zt) ? p.zt : []), ...(Array.isArray(p.zb) ? p.zb : [])];
+  const rows = [
+    ...(Array.isArray(p.zt) ? p.zt : []),
+    ...(Array.isArray(p.zb) ? p.zb : []),
+    ...(Array.isArray(p.dt) ? p.dt : [])
+  ];
   const x = rows.find(r => String(r && r.code) === code);
   if (!x) return null;
   return {
@@ -414,7 +419,8 @@ function stockSeal(pools, code) {
     firstSeal: x.firstSeal || null, lastSeal: x.lastSeal || null,
     brokenCount: x.brokenCount === undefined ? null : x.brokenCount,
     boards: x.boards === undefined ? null : x.boards,
-    source: p.source || null
+    downDays: x.downDays === undefined ? null : x.downDays,
+    source: (x.kind === 'dt' ? '东方财富跌停池' : x.kind === 'zb' ? '东方财富炸板池' : p.source) || null
   };
 }
 
