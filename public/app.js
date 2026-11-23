@@ -773,7 +773,7 @@
       '<span class="pl-avg ' + (t.avgPct > 0 ? 'up' : t.avgPct < 0 ? 'down' : '') + '">今日均涨 ' + (t.avgPct > 0 ? '+' : '') + N(t.avgPct) + '%</span>' +
       (t.limitDown ? tag('跌停 ' + t.limitDown, 'green') : '') + '</div>' +
       '<div class="pl-stocks">' + t.stocks.map(x =>
-        '<span class="pl-stock ' + x.cls + '" title="' + E(x.code + ' · ' + (x.industry || '—') + ' · 昨' + x.prevBoards + '板 → 今' + (x.currBoards ? x.currBoards + '板' : x.status)) + '">' +
+        '<span class="pl-stock ' + x.cls + '" data-stock-code="' + E(x.code) + '" title="' + E(x.code + ' · ' + (x.industry || '—') + ' · 昨' + x.prevBoards + '板 → 今' + (x.currBoards ? x.currBoards + '板' : x.status)) + '｜点击查看分时 / 日K">' +
         boardBadge(x.code) + E(x.name) + '<b>' + (x.pct === null ? '—' : (x.pct > 0 ? '+' : '') + N(x.pct) + '%') + '</b>' +
         '<i>' + E(x.status) + '</i></span>').join('') + '</div></div>').join('');
     // 资金方向 + 行业板块 / 概念板块分析（数据：新浪资金流 + 新浪板块行情）
