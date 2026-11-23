@@ -102,13 +102,48 @@
       /Failed to fetch|fetch failed|NetworkError|Load failed|ECONNREFUSED|ECONNRESET/i.test(String((e && e.message) || e));
   }
 
+  /* ── 模块显示配置：顶部导航只展示勾选的模块，持久化到 localStorage ── */
+  const MODULE_CFG_KEY = 'stockhy_visible_modules_v1';
+  const MODULES = [
+    { id: 'review', label: '复盘计划' },
+    { id: 'picks', label: '短线个股推荐' },
+    { id: 'live', label: '实时机会' },
+    { id: 'lowbuy', label: '连板低吸机会' },
+    { id: 'relay', label: '明日接力推荐' },
+    { id: 'ai', label: 'AI 分析推荐' },
+    { id: 'pullback', label: '涨停回踩支撑' },
+    { id: 'support', label: '支撑位反转' },
+    { id: 'dragon', label: '明日龙头' },
+    { id: 'auction', label: '集合竞价首板' },
+    { id: 'predict', label: '9:25首板预测' },
+    { id: 'enlighten', label: '龙场悟道' }
+  ];
+  const MODULE_IDS = MODULES.map(m => m.id);
+  function moduleCfgLoad() {
+    const all = MODULE_IDS.slice();
+    try {
+      const raw = localStorage.getItem(MODULE_CFG_KEY);
+      if (raw === null) return all;                    // 未配置过：默认全部显示
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return all;
+      const picked = arr.filter(k => MODULE_IDS.indexOf(k) >= 0);
+      return picked.length ? picked : all;             // 配置为空则回退默认，避免无模块可用
+    } catch (e) { return all; }
+  }
+  function moduleCfgSave(ids) {
+    try { localStorage.setItem(MODULE_CFG_KEY, JSON.stringify(ids)); } catch (e) { /* 隐私模式下忽略 */ }
+  }
+
   const S = {
     data: null, prevPrices: {}, tab: 'review', boards: new Set(['全部']),
+    visibleModules: moduleCfgLoad(),
     freq: 15, tick: 0, timer: null, boardsList: null,
     collapsed: new Set(), expanded: new Set(), chartsReady: !!window.echarts,
     lastFilters: '', aiCfgOpen: false, aiText: '', aiTextTime: '',
     pull: null, pullLoading: false, pullAt: 0, pullSelected: null,
     pullFilters: '', pullError: null, pullMethodOpen: false, pullOfflineTimer: null, pullDays: 8,
+    support: null, supportLoading: false, supportError: null, supportAt: 0, supportMethodOpen: false,
+    supportOpts: { scan: 600, window: 60, minDraw: 4, bandPct: 3, smallYang: 3, lookback: 6, shape: '全部', board: '全部' },
     bt: null, btLoading: false, btError: null, btOpen: false,
     btDate: 'all', btWindow: 5, btMethodOpen: false,
     dg: null, dgLoading: false, dgError: null, dgAt: 0, dgSelected: null, dgFilters: '',
@@ -165,6 +200,12 @@
       const t = e.target.closest('.tab'); if (!t) return;
       switchTab(t.dataset.tab);
     };
+    $('btnModuleCfg').onclick = openModuleCfg;
+    $('mcClose').onclick = closeModuleCfg;
+    $('moduleCfgMask').onclick = e => { if (e.target === $('moduleCfgMask')) closeModuleCfg(); };
+    $('mcAll').onclick = () => { [...$('mcList').querySelectorAll('input')].forEach(i => { i.checked = true; }); };
+    $('mcInvert').onclick = () => { [...$('mcList').querySelectorAll('input')].forEach(i => { i.checked = !i.checked; }); };
+    $('mcSave').onclick = saveModuleCfg;
     ['sectorSelect', 'boardsMin', 'sortSel', 'excludeST'].forEach(id => {
       $(id).addEventListener('change', () => refresh(true));
     });
@@ -177,7 +218,11 @@
       if (el) { e.preventDefault(); e.stopPropagation(); openStockChart(el.dataset.stockCode); return; }
       if (e.target.closest('#smClose') || e.target.id === 'stockModal') closeStockChart();
     });
-    document.addEventListener('keydown', e => { if (e.key === 'Escape' && S.chart.open) closeStockChart(); });
+    document.addEventListener('keydown', e => {
+      if (e.key !== 'Escape') return;
+      if ($('moduleCfgMask').style.display !== 'none') closeModuleCfg();
+      else if (S.chart.open) closeStockChart();
+    });
     if ($('smClose')) $('smClose').onclick = closeStockChart;
     initStockSearch();
     [...document.querySelectorAll('.sm-tab')].forEach(b => {
@@ -192,9 +237,10 @@
     });
     loadBoards();
     initLadderDates();
+    applyModuleCfg();
     const qs = new URLSearchParams(location.search);
     const initTab = qs.get('tab');
-    if (initTab && ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'auction', 'predict', 'enlighten'].indexOf(initTab) >= 0) switchTab(initTab);
+    if (initTab && ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'support', 'dragon', 'auction', 'predict', 'enlighten'].indexOf(initTab) >= 0) switchTab(initTab);
     // 深链：?stock=000001&period=week 直接打开个股K线弹窗
     const initStock = qs.get('stock');
     if (/^\d{6}$/.test(initStock || '')) {
@@ -358,11 +404,48 @@
     return out.join(' · ');
   }
 
+  /* 模块显示配置：只展示勾选的 tab 与对应 pane；当前模块被隐藏时自动切到第一个可见模块 */
+  function applyModuleCfg() {
+    const vis = S.visibleModules;
+    if (!vis.length) return;
+    [...$('tabs').children].forEach(c => {
+      if (c.dataset.tab) c.style.display = vis.indexOf(c.dataset.tab) >= 0 ? '' : 'none';
+    });
+    MODULE_IDS.forEach(k => {
+      const pane = $('pane-' + k);
+      if (pane) pane.style.display = vis.indexOf(k) >= 0 ? '' : 'none';
+    });
+    if (vis.indexOf(S.tab) < 0) switchTab(vis[0]);
+  }
+  function openModuleCfg() {
+    $('mcList').innerHTML = MODULES.map(m =>
+      '<label class="mc-item"><input type="checkbox" data-mod="' + m.id + '"' +
+      (S.visibleModules.indexOf(m.id) >= 0 ? ' checked' : '') + '><span>' + E(m.label) + '</span></label>'
+    ).join('');
+    $('mcList').onchange = () => {
+      const n = $('mcList').querySelectorAll('input:checked').length;
+      $('mcHint').textContent = '已选 ' + n + ' / ' + MODULES.length + ' 个模块';
+    };
+    $('mcHint').textContent = '已选 ' + S.visibleModules.length + ' / ' + MODULES.length + ' 个模块';
+    $('moduleCfgMask').style.display = 'flex';
+  }
+  function closeModuleCfg() { $('moduleCfgMask').style.display = 'none'; }
+  function saveModuleCfg() {
+    const picked = [...$('mcList').querySelectorAll('input:checked')].map(i => i.dataset.mod);
+    if (!picked.length) { $('mcHint').textContent = '至少保留一个模块'; return; }
+    S.visibleModules = picked;
+    moduleCfgSave(picked);
+    applyModuleCfg();
+    closeModuleCfg();
+  }
+
   function switchTab(t) {
+    if (MODULE_IDS.indexOf(t) < 0 || S.visibleModules.indexOf(t) < 0) return;
     S.tab = t;
     [...$('tabs').children].forEach(c => c.classList.toggle('active', c.dataset.tab === t));
-    ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'dragon', 'auction', 'predict', 'enlighten'].forEach(k => $('pane-' + k).classList.toggle('active', k === t));
+    ['review', 'picks', 'live', 'lowbuy', 'relay', 'ai', 'pullback', 'support', 'dragon', 'auction', 'predict', 'enlighten'].forEach(k => $('pane-' + k).classList.toggle('active', k === t));
     if (t === 'pullback' && !S.pull && !S.pullLoading) loadPullback(false);
+    if (t === 'support' && !S.support && !S.supportLoading) loadSupportReversal(false);
     if (t === 'dragon') {
       const histParam = new URLSearchParams(location.search).get('hist');
       if (histParam && /^\d{8}$/.test(histParam)) {
@@ -398,6 +481,7 @@
     $('badgeRelay').textContent = ((d.relay && d.relay.list) || []).length;
     $('badgeAI').textContent = m.aiConfigured ? '已接模型' : '本地';
     if (S.pull) $('badgePull').textContent = (S.pull.list || []).length;
+    if (S.support) $('badgeSupport').textContent = ((S.support.result && S.support.result.list) || []).length || '—';
     if (S.en) $('badgeEn').textContent = (S.en.best ? String(S.en.best.name).slice(0, 6) : '已回测');
     if (S.auction) $('badgeAuction').textContent = (S.auction.list || []).length || '—';
     if (S.predict) $('badgePredict').textContent = (S.predict.summary && S.predict.summary.focus) || '—';
@@ -2903,6 +2987,126 @@
         '<div class="card pad" style="margin-top:12px"><button class="btn btn-primary" id="enRetry">重新回测</button></div>';
       $('enRetry').onclick = () => loadEnlightenment(true);
     } finally { S.enLoading = false; }
+  }
+
+  /* ═══════════ 支撑位反转 · 回调后主力资金首次翻红（回测 + 当日信号） ═══════════ */
+  function srMethodCard() {
+    const meth = (S.support && S.support.result && S.support.result.method) || {};
+    const points = meth.points || [];
+    const open = S.supportMethodOpen;
+    return '<div class="card pad dg-card" style="margin-top:12px">' +
+      '<div class="dg-card-head"><h4>口径与免责说明</h4>' +
+      '<button class="btn btn-ghost btn-sm" id="srMethodToggle">' + (open ? '收起' : '查看') + '全部口径</button></div>' +
+      '<div id="srMethodBody" style="display:' + (open ? '' : 'none') + '">' +
+      points.map(p => '<div class="kv"><span class="k">' + E(p.name) + '</span><span class="v">' + E(p.text) + '</span></div>').join('') +
+      '</div></div>';
+  }
+  const srPct = (v, suf) => v === null || v === undefined ? '—' : (v > 0 ? '+' : '') + N(v) + (suf || '');
+  function renderSupportReversal() {
+    const j = S.support;
+    if (!j) return;
+    if (!j.ok || !j.result) {
+      $('pane-support').innerHTML = '<div class="card empty"><b>回测失败：' + E(j.error || '数据不足') + '</b><br>' +
+        '<span class="small muted">' + (isConnError(j) ? E(SERVICE_HINT) : '服务端或上游数据源返回异常；系统不会用推测数据填充。') + '</span></div>' +
+        '<div class="card pad" style="margin-top:12px"><button class="btn btn-primary" id="srRetry">重新回测</button></div>';
+      const rb = $('srRetry'); if (rb) rb.onclick = () => loadSupportReversal(true);
+      return;
+    }
+    const m = j.meta || {}, r = j.result;
+    const ov = r.overall || {};
+    const o = S.supportOpts;
+    // 顶部控制条
+    const head = '<div class="card pad"><div class="pb-controls">' +
+      '<label>扫描 <select class="sel" id="srScan">' + [300, 600, 900, 1200].map(n => '<option value="' + n + '"' + (o.scan === n ? ' selected' : '') + '>' + n + ' 只</option>').join('') + '</select></label>' +
+      '<label>回测 <select class="sel" id="srWindow">' + [30, 60, 90, 120].map(n => '<option value="' + n + '"' + (o.window === n ? ' selected' : '') + '>近 ' + n + ' 日</option>').join('') + '</select></label>' +
+      '<label>最小回撤 <select class="sel" id="srDraw">' + [3, 4, 6, 8, 10].map(n => '<option value="' + n + '"' + (o.minDraw === n ? ' selected' : '') + '>' + n + '%</option>').join('') + '</select></label>' +
+      '<label>形态 <select class="sel" id="srShape">' + ['全部', '十字星', '小阳线'].map(v => '<option value="' + v + '"' + (o.shape === v ? ' selected' : '') + '>' + v + '</option>').join('') + '</select></label>' +
+      '<label>板块 <select class="sel" id="srBoard">' + ['全部', '主板', '创业板', '科创板'].map(v => '<option value="' + v + '"' + (o.board === v ? ' selected' : '') + '>' + v + '</option>').join('') + '</select></label>' +
+      '<button class="btn btn-primary" id="srRefresh">重新回测</button>' +
+      '<span class="small muted">首次扫描约需 ' + (o.scan >= 900 ? '60~90' : '30~60') + ' 秒，结果缓存 10 分钟</span></div>' +
+      '<div class="small muted" style="margin-top:8px">候选口径：' + E(m.candidateNote || '') + '</div></div>';
+    // KPI 概览
+    const kpi = '<div class="card pad" style="margin-top:12px"><div class="sr-kpis">' +
+      '<div class="pb-kpi"><span>有效样本 / 信号</span><b>' + E(r.counted) + ' <span class="small muted">/ ' + E(r.signalCount) + '</span></b></div>' +
+      '<div class="pb-kpi"><span>次日涨停率</span><b class="up">' + E(ov.limitRate == null ? '—' : ov.limitRate + '%') + '</b></div>' +
+      '<div class="pb-kpi"><span>次日开→收 均收益</span><b class="' + (ov.retOC > 0 ? 'up' : ov.retOC < 0 ? 'down' : '') + '">' + srPct(ov.retOC, '%') + '</b></div>' +
+      '<div class="pb-kpi"><span>信号收→次收 均收益</span><b class="' + (ov.retCC > 0 ? 'up' : ov.retCC < 0 ? 'down' : '') + '">' + srPct(ov.retCC, '%') + '</b></div>' +
+      '<div class="pb-kpi"><span>次日上涨占比(开→收)</span><b>' + E(ov.winOC == null ? '—' : ov.winOC + '%') + '</b></div>' +
+      '<div class="pb-kpi"><span>最新信号日</span><b>' + E(fmtDate(r.latestDate)) + '</b></div>' +
+      '</div><div class="small muted" style="margin-top:8px">资金口径：' + E(m.fundCaliber || r.fundCaliber || '') +
+      ' · 资金源：' + E((m.fundSources || []).map(x => x.source + '(' + x.n + ')').join(' / ') || '—') + '</div></div>';
+    // 分档对比表
+    const tierRows = (arr, label) => arr.map(x => '<tr><td>' + E(label + x.label) + '</td><td>' + E(x.n) + '</td>' +
+      '<td>' + E(x.n >= 8 && x.limitRate != null ? x.limitRate + '%' : (x.limitRate == null ? '—' : '样本少')) + '</td>' +
+      '<td class="' + (x.retOC > 0 ? 'up' : x.retOC < 0 ? 'down' : '') + '">' + srPct(x.retOC, '%') + '</td>' +
+      '<td class="' + (x.retCC > 0 ? 'up' : x.retCC < 0 ? 'down' : '') + '">' + srPct(x.retCC, '%') + '</td>' +
+      '<td>' + E(x.winOC == null ? '—' : x.winOC + '%') + '</td></tr>').join('');
+    const tiers = '<div class="card pad" style="margin-top:12px"><div class="sm-block-head"><h4>分档对比（次日涨停率 / 收益）</h4>' +
+      '<span class="small muted">样本 &lt;8 只显示计数不显示概率</span></div>' +
+      '<div class="tbl-wrap"><table><thead><tr><th>分档</th><th>样本</th><th>次日涨停率</th><th>开→收均收益</th><th>收→收均收益</th><th>上涨占比</th></tr></thead><tbody>' +
+      tierRows(r.shapes || [], '形态·') + tierRows(r.draws || [], '回调·') +
+      '</tbody></table></div></div>';
+    // 当日信号列表（按形态/板块筛选）
+    let list = (r.list || []).filter(x => (o.shape === '全部' || x.shapeLabel === o.shape) && (o.board === '全部' || x.board === o.board));
+    const listCard = '<div class="card pad" style="margin-top:12px"><div class="sm-block-head"><h4>最新信号股（' + E(fmtDate(r.latestDate)) + ' · ' + list.length + ' 只）</h4>' +
+      '<span class="small muted">按主力净流入额排序 · 概率=历史同形态次日涨停率</span></div>' +
+      (list.length ? '<div class="sr-list">' + list.map(x =>
+        '<div class="pb-item" data-code="' + E(x.code) + '">' +
+        '<div class="pb-item-top"><span class="stock-link" data-stock-code="' + E(x.code) + '"><b>' + E(x.name) + '</b> <span class="em-code">' + E(x.code) + '</span></span>' +
+        '<span class="tag ' + (x.shape === 'doji' ? 'blue' : 'red') + '">' + E(x.shapeLabel) + '</span>' +
+        '<span class="tag">' + E(x.board) + '</span>' +
+        '<span class="sr-spacer"></span><span class="sr-prob">次日涨停率 <b>' + E(x.prob === null ? '—' : x.prob + '%') + '</b></span></div>' +
+        '<div class="pb-item-meta"><span>收盘 <b>' + N(x.close) + '</b></span><span>当日 ' + srPct(x.pct, '%') + '</span>' +
+        '<span>距高点回撤 <b class="down">' + E(x.drawdown) + '%</b></span><span>支撑参考 ' + N(x.support) + '</span>' +
+        '<span>主力净额 <b class="up">' + E(x.mainYi) + '亿</b>（前 ' + E((x.prevMain / 1e8).toFixed(2)) + '亿）</span>' +
+        '<span>预期开→收 ' + srPct(x.expOC, '%') + '</span></div>' +
+        '<div class="small muted" style="margin-top:5px">' + E((x.basis || []).join(' · ')) + '</div>' +
+        '</div>').join('') + '</div>' : '<div class="empty">当前筛选下无信号股，可调高扫描数或放宽回撤阈值</div>') + '</div>';
+    // 最近样本明细
+    const samples = (r.samples || []).slice(0, 40);
+    const sampleCard = '<div class="card pad" style="margin-top:12px"><div class="sm-block-head"><h4>最近信号样本（含次日结果）</h4>' +
+      '<span class="small muted">pending=最新信号日尚无次日数据</span></div>' +
+      (samples.length ? '<div class="tbl-wrap"><table><thead><tr><th>信号日</th><th>个股</th><th>形态</th><th>回撤</th><th>主力净额</th><th>次日涨停</th><th>开→收</th><th>收→收</th></tr></thead><tbody>' +
+        samples.map(s => '<tr><td>' + E(fmtDate(s.date)) + '</td><td><span class="stock-link" data-stock-code="' + E(s.code) + '">' + E(s.name) + '</span> <span class="em-code">' + E(s.code) + '</span></td>' +
+          '<td>' + E(s.shape === 'doji' ? '十字星' : '小阳线') + '</td><td class="down">' + E(s.drawdown) + '%</td><td class="up">' + E((s.main / 1e8).toFixed(2)) + '亿</td>' +
+          (s.pending ? '<td colspan="3" class="muted">pending（待次日）</td>' :
+            '<td class="' + (s.next.limitUp ? 'up' : '') + '">' + (s.next.limitUp ? '涨停 +' + E(s.next.pct) + '%' : E(s.next.pct) + '%') + '</td>' +
+            '<td class="' + (s.next.retOC > 0 ? 'up' : s.next.retOC < 0 ? 'down' : '') + '">' + srPct(s.next.retOC, '%') + '</td>' +
+            '<td class="' + (s.next.retCC > 0 ? 'up' : s.next.retCC < 0 ? 'down' : '') + '">' + srPct(s.next.retCC, '%') + '</td>') + '</tr>').join('') +
+        '</tbody></table></div>' : '<div class="empty">无信号样本</div>') + '</div>';
+    $('pane-support').innerHTML = head + kpi + tiers + listCard + sampleCard + srMethodCard() +
+      '<div class="disclaimer" style="margin-top:14px"><strong>免责声明</strong>：' + E(m.disclaimer || '') + '</div>';
+    // 事件
+    $('srScan').onchange = e => { S.supportOpts.scan = Number(e.target.value); loadSupportReversal(true); };
+    $('srWindow').onchange = e => { S.supportOpts.window = Number(e.target.value); loadSupportReversal(true); };
+    $('srDraw').onchange = e => { S.supportOpts.minDraw = Number(e.target.value); loadSupportReversal(true); };
+    $('srShape').onchange = e => { S.supportOpts.shape = e.target.value; renderSupportReversal(); };
+    $('srBoard').onchange = e => { S.supportOpts.board = e.target.value; renderSupportReversal(); };
+    $('srRefresh').onclick = () => loadSupportReversal(true);
+    const mt = $('srMethodToggle'); if (mt) mt.onclick = () => { S.supportMethodOpen = !S.supportMethodOpen; renderSupportReversal(); };
+  }
+  async function loadSupportReversal(force) {
+    if (S.supportLoading) return;
+    S.supportLoading = true;
+    if (!S.support) $('pane-support').innerHTML = '<div class="card empty">正在全市场筛选「回调到位 + 主力资金首次翻红 + 十字星/小阳线」个股并回测次日表现…<br><span class="small muted">首次需拉取数百只个股的日K与资金流，约 30~90 秒，请耐心等待。</span></div>';
+    const o = S.supportOpts;
+    const q = new URLSearchParams({ scan: String(o.scan), window: String(o.window), minDraw: String(o.minDraw), bandPct: String(o.bandPct), smallYang: String(o.smallYang), lookback: String(o.lookback) });
+    if (force) q.set('force', '1');
+    try {
+      const resp = await fetch('/api/support-reversal?' + q.toString(), { cache: 'no-store' });
+      const j = await resp.json();
+      if (!resp.ok || j.error) throw new Error(j.error || ('HTTP ' + resp.status));
+      S.support = j; S.supportAt = Date.now(); S.supportError = null;
+      renderSupportReversal();
+      $('badgeSupport').textContent = ((j.result && j.result.list) || []).length || '—';
+    } catch (e) {
+      S.supportError = e.message;
+      $('badgeSupport').textContent = '—';
+      $('pane-support').innerHTML = '<div class="card empty"><b>回测失败：' + E(e.message) + '</b><br>' +
+        '<span class="small muted">' + (isConnError(e) ? E(SERVICE_HINT) : '服务端或上游数据源返回异常；系统不会用推测数据填充。') + '</span></div>' +
+        '<div class="card pad" style="margin-top:12px"><button class="btn btn-primary" id="srRetry">重新回测</button></div>';
+      const rb = $('srRetry'); if (rb) rb.onclick = () => loadSupportReversal(true);
+    } finally { S.supportLoading = false; }
   }
 
   /* ═══════════ 集合竞价 · 多因子首板封板概率（选股视图） ═══════════ */

@@ -140,10 +140,12 @@
     <button class="tab tab-accent" data-tab="relay">明日接力推荐 <span class="tab-badge" id="badgeRelay">—</span></button>
     <button class="tab" data-tab="ai">AI 分析推荐 <span class="tab-badge" id="badgeAI">本地</span></button>
     <button class="tab tab-new" data-tab="pullback">涨停回踩支撑 <span class="tab-badge" id="badgePull">—</span></button>
+    <button class="tab tab-new" data-tab="support">支撑位反转 <span class="tab-badge" id="badgeSupport">—</span></button>
     <button class="tab tab-new" data-tab="dragon">明日龙头 <span class="tab-badge" id="badgeDragon">—</span></button>
     <button class="tab tab-new" data-tab="auction">集合竞价首板 <span class="tab-badge" id="badgeAuction">—</span></button>
     <button class="tab tab-new" data-tab="predict">9:25首板预测 <span class="tab-badge" id="badgePredict">—</span></button>
     <button class="tab tab-accent" data-tab="enlighten">龙场悟道 <span class="tab-badge" id="badgeEn">—</span></button>
+    <button class="tab-cfg" id="btnModuleCfg" title="配置顶部显示的模块">⚙ 模块设置</button>
   </nav>
 
   <main>
@@ -154,6 +156,7 @@
     <section class="tabpane" id="pane-relay"></section>
     <section class="tabpane" id="pane-ai"></section>
     <section class="tabpane" id="pane-pullback"></section>
+    <section class="tabpane" id="pane-support"></section>
     <section class="tabpane" id="pane-dragon"></section>
     <section class="tabpane" id="pane-auction"></section>
     <section class="tabpane" id="pane-predict"></section>
@@ -200,6 +203,26 @@
     </div>
     <div class="sm-body" id="smBody"><div class="empty">载入中…</div></div>
     <div class="sm-foot" id="smFoot"></div>
+  </div>
+</div>
+
+<!-- 模块显示设置：勾选需要在顶部导航显示的模块，设置保存在本机浏览器 -->
+<div id="moduleCfgMask" class="mc-mask" style="display:none">
+  <div class="mc-dialog" role="dialog" aria-modal="true" aria-label="模块显示设置">
+    <div class="mc-head">
+      <h3>模块显示设置</h3>
+      <span class="small muted">仅勾选的模块会在顶部导航显示，设置保存在本机浏览器</span>
+      <button id="mcClose" class="sm-close" aria-label="关闭">×</button>
+    </div>
+    <div class="mc-body">
+      <div id="mcList" class="mc-list"></div>
+    </div>
+    <div class="mc-foot">
+      <button id="mcAll" class="btn">全选</button>
+      <button id="mcInvert" class="btn">反选</button>
+      <span id="mcHint" class="muted small mc-hint"></span>
+      <button id="mcSave" class="btn btn-primary">保存并应用</button>
+    </div>
   </div>
 </div>
 

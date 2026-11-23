@@ -662,6 +662,82 @@ async function buildBacktest(query) {
   return { meta, days, rows, summary: an.summarizeBacktest(rows), methodology };
 }
 
+/* ── 支撑位反转：回调 + 主力资金首次翻红 + 十字星/小阳线（回测 + 当日信号） ── */
+let supportRevCache = { key: '', at: 0, value: null, inflight: null };
+async function getSupportReversal(query, force) {
+  const key = JSON.stringify({
+    scan: query.scan || '', window: query.window || '', minDraw: query.minDraw || '',
+    bandPct: query.bandPct || '', smallYang: query.smallYang || '', lookback: query.lookback || ''
+  });
+  if (!force && supportRevCache.value && supportRevCache.key === key && Date.now() - supportRevCache.at < 600000) return supportRevCache.value;
+  if (supportRevCache.inflight) return supportRevCache.inflight;
+  supportRevCache.inflight = (async () => {
+    const t0 = Date.now();
+    try {
+      const scan = Math.max(80, Math.min(1200, Number(query.scan) || 600));
+      const [universe, hist] = await Promise.all([
+        ds.getUniverse().catch(() => ({ list: [] })),
+        ds.getRecentLimitUpPools(10).catch(() => ({ byCode: {} }))
+      ]);
+      const uniMap = new Map((universe.list || []).map(x => [x.code, x]));
+      // 候选：全市场非 ST 主板/创业/科创按成交额降序前 scan + 近 10 日涨停回踩池并集
+      const pool = new Map();
+      (universe.list || [])
+        .filter(x => !x.isST && /^(60|00|30|68)/.test(x.code) && Number(x.price) > 2 && Number(x.amount) > 2e7)
+        .sort((a, b) => (b.amount || 0) - (a.amount || 0))
+        .slice(0, scan)
+        .forEach(x => pool.set(x.code, x));
+      Object.values(hist.byCode || {}).forEach(x => {
+        if (!pool.has(x.code) && uniMap.has(x.code) && !/ST/i.test(x.name || '')) pool.set(x.code, uniMap.get(x.code));
+      });
+      const cand = [...pool.values()];
+      // 低并发拉日K + 资金流历史（东财主力净额，失败降级新浪并如实标注）
+      const kdata = await limitedMap(cand, 7, async x => ds.getKlineData(x.code, 130).catch(() => null));
+      const fdata = await limitedMap(cand, 7, async x => ds.getFundHistory(x.code, 100).catch(() => ({ rows: [], source: null })));
+      const inputs = [];
+      const fundSources = new Map();
+      let noKline = 0, noFund = 0;
+      cand.forEach((x, i) => {
+        const kd = kdata[i], fd = fdata[i];
+        if (!kd || !kd.rows || kd.rows.length < 30) { noKline++; return; }
+        if (!fd || !fd.rows || fd.rows.length < 8) { noFund++; return; }
+        if (fd.source) fundSources.set(fd.source, (fundSources.get(fd.source) || 0) + 1);
+        inputs.push({
+          code: x.code, name: x.name, board: ds.boardOf(x.code), industry: x.industry || '',
+          klines: kd.rows, fund: fd.rows
+        });
+      });
+      // 资金口径：优先东财（超大单+大单），若全为新浪则标注新浪口径
+      const srcList = [...fundSources.entries()].sort((a, b) => b[1] - a[1]);
+      const mainSrc = srcList.length ? srcList[0][0] : null;
+      const caliber = mainSrc && /新浪/.test(mainSrc)
+        ? '主力净额=超大单净额（新浪口径，非东财超大单+大单；东财不可用时的降级源）'
+        : '主力净额=超大单+大单（东方财富口径）';
+      const result = an.supportReversalBacktest(inputs, {
+        window: query.window, minDraw: query.minDraw, bandPct: query.bandPct,
+        smallYang: query.smallYang, lookback: query.lookback,
+        fundSource: srcList.map(([s, n]) => s + ' ' + n + ' 只').join(' / ') || null,
+        fundCaliber: caliber,
+        klineSource: '腾讯证券前复权日K（失败降级新浪不复权并逐只标注）'
+      });
+      const meta = {
+        scannedCandidates: cand.length, usedCodes: inputs.length, noKline, noFund,
+        scan, elapsedMs: Date.now() - t0,
+        fundSources: srcList.map(([source, n]) => ({ source, n })), fundCaliber: caliber,
+        candidateNote: '候选=全市场非ST主板/创业/科创按成交额降序前 ' + scan + ' 只 + 近10日涨停回踩池并集；成交额过滤 >2000万、股价>2元。全市场盲扫请求量过大，故聚焦活跃股；信号与回测均基于这些候选的真实日K与资金流。',
+        asOf: result.asOf, disclaimer: DISCLAIMER
+      };
+      const value = { ok: true, meta, result };
+      supportRevCache = { key, at: Date.now(), value, inflight: null };
+      return value;
+    } catch (e) {
+      supportRevCache = { key, at: 0, value: null, inflight: null };
+      throw e;
+    }
+  })();
+  return supportRevCache.inflight;
+}
+
 async function getBacktest(query, force) {
   const key = JSON.stringify({
     window: query.window || '', days: query.days || '',
@@ -1513,6 +1589,7 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (u.pathname === '/api/pullback') return sendJson(res, await getPullback(q, q.force === '1'));
+    if (u.pathname === '/api/support-reversal') return sendJson(res, await getSupportReversal(q, q.force === '1'));
     if (u.pathname === '/api/backtest') return sendJson(res, await getBacktest(q, q.force === '1'));
     if (u.pathname === '/api/dragon') return sendJson(res, await getDragon(q, q.force === '1'));
     if (u.pathname === '/api/dragon/review') return sendJson(res, await getDragonReview(q, q.force === '1'));
